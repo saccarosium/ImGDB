@@ -1,36 +1,36 @@
-// Copyright (C) 2022 Kyle Sylvestre
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-#include "common.h"
-#include "gdb.h"
-#include "gdb.cpp"
-
 #include <fstream>
 #include <functional>
 #include <filesystem>
+#include <unistd.h>
+#include <string>
+#include <vector>
+#include <sys/wait.h>
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <inttypes.h>
+#include <libgen.h>
+#include <errno.h>
+#include <pthread.h>
+#include <spawn.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <semaphore.h>
+#include <poll.h>
+#include <sys/time.h>
+#include <sys/stat.h>
 
 // third party
-#include <imgui/imconfig.h>
-#include <imgui/imgui.h>
-#include <imgui/imgui_internal.h>
-#include <imgui/imgui_impl_glfw.h>
-#include <imgui/imgui_impl_opengl2.h>
 #include <GLFW/glfw3.h>
-#include <imgui_file_window.h>
-#include <unistd.h>
-#include "liberation_mono.h"
+#include <imgui/all.hpp>
+#include <liberation_mono.h>
+
+// Mine
+#include "common.h"
+#include "gdb.h"
+#include "gdb.cpp"
 
 // imgui/misc/imgui_stdlib.cpp
 namespace ImGui {

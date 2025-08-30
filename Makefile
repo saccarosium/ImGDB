@@ -1,63 +1,57 @@
 CXX = g++
-CXXFLAGS += -I./third-party -I./src -I./third-party/glfw/include
-CXXFLAGS += -std=c++23 -Wall -Wextra -Werror -pedantic
+CXXFLAGS = -std=c++23 -Wall -Wextra -Werror -pedantic
+CXXFLAGS += -I./third-party -I./third-party/glfw/include
+
+LIBS = -lGL
 
 DEBUG ?= 0
 ifeq ($(DEBUG), 1)
-    CXXFLAGS += -DDEBUG -O0 -ggdb
-	OBJDIR = build/debug
+  CXXFLAGS += -O0 -ggdb
+  CMAKE_RELEASE=Debug
+  BUILD_DIR = build/debug
 else
-    CXXFLAGS += -DNDEBUG -O2
-	OBJDIR = build/release
+  CXXFLAGS += -O2
+  CMAKE_RELEASE=Release
+  BUILD_DIR = build/release
 endif
 
-BIN = $(OBJDIR)/tug
+BIN = $(BUILD_DIR)/tug
 
 SAN ?= 0
 ifeq ($(SAN), 1)
-	CXXFLAGS += -fno-omit-frame-pointer -fsanitize=undefined,address
+  CXXFLAGS += -fno-omit-frame-pointer -fsanitize=undefined,address
 endif
 
-IMGUI_DIR = ./third-party/imgui
-SOURCES = ./src/main.cpp\
-          $(IMGUI_DIR)/imgui.cpp\
-          $(IMGUI_DIR)/imgui_draw.cpp\
-          $(IMGUI_DIR)/imgui_impl_glfw.cpp\
-          $(IMGUI_DIR)/imgui_impl_opengl2.cpp\
-          $(IMGUI_DIR)/imgui_tables.cpp\
-          $(IMGUI_DIR)/imgui_widgets.cpp
-
-OBJS = $(addprefix $(OBJDIR)/, $(addsuffix .o, $(basename $(notdir $(SOURCES)))))
-
 # GLFW
-GLFW = glfw3
-LIBS += -L ./third-party/glfw/$(OBJDIR) -l $(GLFW)
-LIBS += -lpthread -lm -ldl -lGL -lX11
+GLFW = $(BUILD_DIR)/lib/libglfw3.a
+GLFW_PATH = ./third-party/glfw
 
-all: $(BIN)
-	
-$(BIN): $(OBJS)
-	$(CXX) -o $@ $^ $(CXXFLAGS) $(LIBS)
+# ImGUI
+IMGUI = $(BUILD_DIR)/libimgui.a
 
-$(BIN): | $(GLFW)
+all: libs $(BIN)
+
+.PHONY: $(BIN)
+$(BIN):
+	mkdir -p $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(LIBS) -o $@ ./src/main.cpp $(GLFW) $(IMGUI)
+
+.PHONY: libs
+libs: $(GLFW) $(IMGUI)
 
 $(GLFW):
-	DEBUG=$(DEBUG) $(MAKE) -C ./third-party/glfw
+	cmake -DCMAKE_BUILD_TYPE=$(CMAKE_RELEASE) \
+		  -DCMAKE_INSTALL_PREFIX=$(BUILD_DIR) \
+		  -DGLFW_BUILD_DOCS=Off \
+		  -DGLFW_BUILD_TESTS=Off \
+		  -DGLFW_BUILD_EXAMPLES=Off \
+		  -S $(GLFW_PATH) \
+		  -B $(GLFW_PATH)/build
+	$(MAKE) -C $(GLFW_PATH)/build install
 
-$(OBJDIR)/%.o:./src/%.cpp ./src/gdb.h ./src/common.h
-	$(CXX) $(CXXFLAGS) $(CFLAGS) -c -o $@ $<
+$(IMGUI):
+	$(CXX) $(CXXFLAGS) -o $@ -c ./third-party/imgui/all.cpp
 
-$(OBJDIR)/%.o:./third-party/%.cpp
-	$(CXX) $(CXXFLAGS) $(CFLAGS) -c -o $@ $<
-
-$(OBJDIR)/%.o:$(IMGUI_DIR)/%.cpp
-	$(CXX) $(CXXFLAGS) $(CFLAGS) -c -o $@ $<
-	
-$(OBJS): | $(OBJDIR)
-
-$(OBJDIR):
-	mkdir -p $@
-
+.PHONY: clean
 clean:
-	rm -f $(BIN) $(OBJS)
-	$(MAKE) -C ./third-party/glfw DEBUG=$(DEBUG) clean
+	rm -rf $(BUILD_DIR)

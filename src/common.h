@@ -15,32 +15,6 @@
 
 #pragma once
 
-// sepples
-#include <string>
-#include <vector>
-
-// cstd
-#include <sys/wait.h>
-#include <assert.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <inttypes.h>
-
-// linoox
-#include <libgen.h>
-#include <errno.h>
-#include <pthread.h>
-#include <spawn.h>
-#include <signal.h>
-#include <fcntl.h>
-#include <semaphore.h>
-#include <poll.h>
-#include <sys/time.h>
-#include <sys/stat.h>
-
 using String = std::basic_string<char, std::char_traits<char>>;
 
 #define VARGS_CHECK(fmt, ...) (0 && snprintf(NULL, 0, fmt, __VA_ARGS__))

@@ -1,5 +1,5 @@
 /*************************************************************************
- * GLFW 3.4 - www.glfw.org
+ * GLFW 3.5 - www.glfw.org
  * A library for OpenGL, window and input
  *------------------------------------------------------------------------
  * Copyright (c) 2002-2006 Marcus Geelnard
@@ -291,7 +291,7 @@ extern "C" {
  *  features are added to the API but it remains backward-compatible.
  *  @ingroup init
  */
-#define GLFW_VERSION_MINOR          4
+#define GLFW_VERSION_MINOR          5
 /*! @brief The revision number of the GLFW header.
  *
  *  The revision number of the GLFW header.  This is incremented when a bug fix
@@ -1149,11 +1149,12 @@ extern "C" {
 #define GLFW_OPENGL_CORE_PROFILE    0x00032001
 #define GLFW_OPENGL_COMPAT_PROFILE  0x00032002
 
-#define GLFW_CURSOR                 0x00033001
-#define GLFW_STICKY_KEYS            0x00033002
-#define GLFW_STICKY_MOUSE_BUTTONS   0x00033003
-#define GLFW_LOCK_KEY_MODS          0x00033004
-#define GLFW_RAW_MOUSE_MOTION       0x00033005
+#define GLFW_CURSOR                  0x00033001
+#define GLFW_STICKY_KEYS             0x00033002
+#define GLFW_STICKY_MOUSE_BUTTONS    0x00033003
+#define GLFW_LOCK_KEY_MODS           0x00033004
+#define GLFW_RAW_MOUSE_MOTION        0x00033005
+#define GLFW_UNLIMITED_MOUSE_BUTTONS 0x00033006
 
 #define GLFW_CURSOR_NORMAL          0x00034001
 #define GLFW_CURSOR_HIDDEN          0x00034002
@@ -2914,8 +2915,8 @@ GLFWAPI const GLFWvidmode* glfwGetVideoMode(GLFWmonitor* monitor);
  *  @errors Possible errors include @ref GLFW_NOT_INITIALIZED, @ref GLFW_INVALID_VALUE,
  *  @ref GLFW_PLATFORM_ERROR and @ref GLFW_FEATURE_UNAVAILABLE (see remarks).
  *
- *  @remark @wayland Gamma handling is a privileged protocol, this function
- *  will thus never be implemented and emits @ref GLFW_FEATURE_UNAVAILABLE.
+ *  @remark @wayland Monitor gamma is a privileged protocol, so this function
+ *  cannot be implemented and emits @ref GLFW_FEATURE_UNAVAILABLE.
  *
  *  @thread_safety This function must only be called from the main thread.
  *
@@ -2938,8 +2939,8 @@ GLFWAPI void glfwSetGamma(GLFWmonitor* monitor, float gamma);
  *  @errors Possible errors include @ref GLFW_NOT_INITIALIZED, @ref GLFW_PLATFORM_ERROR
  *  and @ref GLFW_FEATURE_UNAVAILABLE (see remarks).
  *
- *  @remark @wayland Gamma handling is a privileged protocol, this function
- *  will thus never be implemented and emits @ref GLFW_FEATURE_UNAVAILABLE while
+ *  @remark @wayland Monitor gamma is a privileged protocol, so this function
+ *  cannot be implemented and emits @ref GLFW_FEATURE_UNAVAILABLE while
  *  returning `NULL`.
  *
  *  @pointer_lifetime The returned structure and its arrays are allocated and
@@ -2982,8 +2983,8 @@ GLFWAPI const GLFWgammaramp* glfwGetGammaRamp(GLFWmonitor* monitor);
  *
  *  @remark @win32 The gamma ramp size must be 256.
  *
- *  @remark @wayland Gamma handling is a privileged protocol, this function
- *  will thus never be implemented and emits @ref GLFW_FEATURE_UNAVAILABLE.
+ *  @remark @wayland Monitor gamma is a privileged protocol, so this function
+ *  cannot be implemented and emits @ref GLFW_FEATURE_UNAVAILABLE.
  *
  *  @pointer_lifetime The specified gamma ramp is copied before this function
  *  returns.
@@ -3182,8 +3183,8 @@ GLFWAPI void glfwWindowHintString(int hint, const char* value);
  *
  *  [bundle-guide]: https://developer.apple.com/library/mac/documentation/CoreFoundation/Conceptual/CFBundles/
  *
- *  @remark @macos On OS X 10.10 and later the window frame will not be rendered
- *  at full resolution on Retina displays unless the
+ *  @remark @macos The window frame will not be rendered at full resolution on
+ *  Retina displays unless the
  *  [GLFW_SCALE_FRAMEBUFFER](@ref GLFW_SCALE_FRAMEBUFFER_hint)
  *  hint is `GLFW_TRUE` and the `NSHighResolutionCapable` key is enabled in the
  *  application bundle's `Info.plist`.  For more information, see
@@ -3429,8 +3430,8 @@ GLFWAPI void glfwSetWindowIcon(GLFWwindow* window, int count, const GLFWimage* i
  *  @errors Possible errors include @ref GLFW_NOT_INITIALIZED, @ref
  *  GLFW_PLATFORM_ERROR and @ref GLFW_FEATURE_UNAVAILABLE (see remarks).
  *
- *  @remark @wayland There is no way for an application to retrieve the global
- *  position of its windows.  This function will emit @ref
+ *  @remark @wayland Window positions are not currently part of any common
+ *  Wayland protocol, so this function cannot be implemented and will emit @ref
  *  GLFW_FEATURE_UNAVAILABLE.
  *
  *  @thread_safety This function must only be called from the main thread.
@@ -3463,8 +3464,8 @@ GLFWAPI void glfwGetWindowPos(GLFWwindow* window, int* xpos, int* ypos);
  *  @errors Possible errors include @ref GLFW_NOT_INITIALIZED, @ref
  *  GLFW_PLATFORM_ERROR and @ref GLFW_FEATURE_UNAVAILABLE (see remarks).
  *
- *  @remark @wayland There is no way for an application to set the global
- *  position of its windows.  This function will emit @ref
+ *  @remark @wayland Window positions are not currently part of any common
+ *  Wayland protocol, so this function cannot be implemented and will emit @ref
  *  GLFW_FEATURE_UNAVAILABLE.
  *
  *  @thread_safety This function must only be called from the main thread.
@@ -3806,10 +3807,6 @@ GLFWAPI void glfwSetWindowOpacity(GLFWwindow* window, float opacity);
  *  @errors Possible errors include @ref GLFW_NOT_INITIALIZED and @ref
  *  GLFW_PLATFORM_ERROR.
  *
- *  @remark @wayland Once a window is iconified, @ref glfwRestoreWindow won’t
- *  be able to restore it.  This is a design decision of the xdg-shell
- *  protocol.
- *
  *  @thread_safety This function must only be called from the main thread.
  *
  *  @sa @ref window_iconify
@@ -3836,6 +3833,10 @@ GLFWAPI void glfwIconifyWindow(GLFWwindow* window);
  *
  *  @errors Possible errors include @ref GLFW_NOT_INITIALIZED and @ref
  *  GLFW_PLATFORM_ERROR.
+ *
+ *  @remark @wayland Restoring a window from maximization is not currently part
+ *  of any common Wayland protocol, so this function can only restore windows
+ *  from maximization.
  *
  *  @thread_safety This function must only be called from the main thread.
  *
@@ -4057,8 +4058,8 @@ GLFWAPI GLFWmonitor* glfwGetWindowMonitor(GLFWwindow* window);
  *  affected by any resizing or mode switching, although you may need to update
  *  your viewport if the framebuffer size has changed.
  *
- *  @remark @wayland The desired window position is ignored, as there is no way
- *  for an application to set this property.
+ *  @remark @wayland Window positions are not currently part of any common
+ *  Wayland protocol.  The window position arguments are ignored.
  *
  *  @thread_safety This function must only be called from the main thread.
  *
@@ -4095,8 +4096,9 @@ GLFWAPI void glfwSetWindowMonitor(GLFWwindow* window, GLFWmonitor* monitor, int 
  *  errors.  However, this function should not fail as long as it is passed
  *  valid arguments and the library has been [initialized](@ref intro_init).
  *
- *  @remark @wayland The Wayland protocol provides no way to check whether a
- *  window is iconfied, so @ref GLFW_ICONIFIED always returns `GLFW_FALSE`.
+ *  @remark @wayland Checking whether a window is iconified is not currently
+ *  part of any common Wayland protocol, so the @ref GLFW_ICONIFIED attribute
+ *  cannot be implemented and is always `GLFW_FALSE`.
  *
  *  @thread_safety This function must only be called from the main thread.
  *
@@ -4218,8 +4220,8 @@ GLFWAPI void* glfwGetWindowUserPointer(GLFWwindow* window);
  *
  *  @errors Possible errors include @ref GLFW_NOT_INITIALIZED.
  *
- *  @remark @wayland This callback will never be called, as there is no way for
- *  an application to know its global position.
+ *  @remark @wayland This callback will not be called.  The Wayland protocol
+ *  provides no way to be notified of when a window is moved.
  *
  *  @thread_safety This function must only be called from the main thread.
  *
@@ -4393,6 +4395,10 @@ GLFWAPI GLFWwindowfocusfun glfwSetWindowFocusCallback(GLFWwindow* window, GLFWwi
  *  [function pointer type](@ref GLFWwindowiconifyfun).
  *
  *  @errors Possible errors include @ref GLFW_NOT_INITIALIZED.
+ *
+ *  @remark @wayland This callback will not be called.  The Wayland protocol
+ *  provides no way to be notified of when a window is iconified, and no way to
+ *  check whether a window is currently iconified.
  *
  *  @thread_safety This function must only be called from the main thread.
  *
@@ -4676,8 +4682,8 @@ GLFWAPI int glfwGetInputMode(GLFWwindow* window, int mode);
  *
  *  This function sets an input mode option for the specified window.  The mode
  *  must be one of @ref GLFW_CURSOR, @ref GLFW_STICKY_KEYS,
- *  @ref GLFW_STICKY_MOUSE_BUTTONS, @ref GLFW_LOCK_KEY_MODS or
- *  @ref GLFW_RAW_MOUSE_MOTION.
+ *  @ref GLFW_STICKY_MOUSE_BUTTONS, @ref GLFW_LOCK_KEY_MODS
+ *  @ref GLFW_RAW_MOUSE_MOTION, or @ref GLFW_UNLIMITED_MOUSE_BUTTONS.
  *
  *  If the mode is `GLFW_CURSOR`, the value must be one of the following cursor
  *  modes:
@@ -4716,6 +4722,11 @@ GLFWAPI int glfwGetInputMode(GLFWwindow* window, int mode);
  *  disabled, or `GLFW_FALSE` to disable it.  If raw motion is not supported,
  *  attempting to set this will emit @ref GLFW_FEATURE_UNAVAILABLE.  Call @ref
  *  glfwRawMouseMotionSupported to check for support.
+ *
+ *  If the mode is `GLFW_UNLIMITED_MOUSE_BUTTONS`, the value must be either
+ *  `GLFW_TRUE` to disable the mouse button limit when calling the mouse button
+ *  callback, or `GLFW_FALSE` to limit the mouse buttons sent to the callback
+ *  to the mouse button token values up to `GLFW_MOUSE_BUTTON_LAST`.
  *
  *  @param[in] window The window whose input mode to set.
  *  @param[in] mode One of `GLFW_CURSOR`, `GLFW_STICKY_KEYS`,
@@ -4911,8 +4922,11 @@ GLFWAPI int glfwGetKey(GLFWwindow* window, int key);
  *  returns `GLFW_PRESS` the first time you call it for a mouse button that was
  *  pressed, even if that mouse button has already been released.
  *
+ *  The @ref GLFW_UNLIMITED_MOUSE_BUTTONS input mode does not effect the
+ *  limit on buttons which can be polled with this function.
+ *
  *  @param[in] window The desired window.
- *  @param[in] button The desired [mouse button](@ref buttons).
+ *  @param[in] button The desired [mouse button token](@ref buttons).
  *  @return One of `GLFW_PRESS` or `GLFW_RELEASE`.
  *
  *  @errors Possible errors include @ref GLFW_NOT_INITIALIZED and @ref
@@ -5288,10 +5302,15 @@ GLFWAPI GLFWcharmodsfun glfwSetCharModsCallback(GLFWwindow* window, GLFWcharmods
  *  is called when a mouse button is pressed or released.
  *
  *  When a window loses input focus, it will generate synthetic mouse button
- *  release events for all pressed mouse buttons.  You can tell these events
- *  from user-generated events by the fact that the synthetic ones are generated
- *  after the focus loss event has been processed, i.e. after the
- *  [window focus callback](@ref glfwSetWindowFocusCallback) has been called.
+ *  release events for all pressed mouse buttons with associated button tokens.
+ *  You can tell these events from user-generated events by the fact that the
+ *  synthetic ones are generated after the focus loss event has been processed,
+ *  i.e. after the [window focus callback](@ref glfwSetWindowFocusCallback) has
+ *  been called.
+ *
+ *  The reported `button` value can be higher than `GLFW_MOUSE_BUTTON_LAST` if
+ *  the button does not have an associated [button token](@ref buttons) and the
+ *  @ref GLFW_UNLIMITED_MOUSE_BUTTONS input mode is set.
  *
  *  @param[in] window The window whose callback to set.
  *  @param[in] callback The new callback, or `NULL` to remove the currently set
