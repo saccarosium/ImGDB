@@ -305,10 +305,6 @@ struct GUI {
     bool initialized_glfw;
 };
 
-// TODO(sacca): remove this abomination
-#include "layout.h"
-#include "layout.cpp"
-
 Program prog;
 GDB gdb;
 GUI gui;
@@ -3467,10 +3463,7 @@ int main(int argc, char** argv)
     if (!gui.started_imgui_opengl2)
         ExitMessage("ImGui_ImplOpenGL2_Init\n");
 
-    layout::load();
-
     ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = NULL; // manually load/save imgui.ini file
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
     // io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // Enable Docking
@@ -3556,8 +3549,6 @@ int main(int argc, char** argv)
         glfwMakeContextCurrent(gui.window);
         glfwSwapBuffers(gui.window);
     }
-
-    layout::save();
 
     // Shutdown lambda called here from atexit
     return EXIT_SUCCESS;
