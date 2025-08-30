@@ -15,7 +15,7 @@ else
   BUILD_DIR = build/release
 endif
 
-BIN = $(BUILD_DIR)/tug
+BIN = $(BUILD_DIR)/imgdb
 
 SAN ?= 0
 ifeq ($(SAN), 1)
