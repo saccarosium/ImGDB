@@ -1,6 +1,6 @@
 CXX = g++
 CXXFLAGS = -std=c++23 -Wall -Wextra -Werror -pedantic
-CXXFLAGS += -I./third-party -I./third-party/glfw/include
+CXXFLAGS += -I./vendor -I./vendor/glfw/include
 
 LIBS = -lGL
 
@@ -22,12 +22,11 @@ ifeq ($(SAN), 1)
   CXXFLAGS += -fno-omit-frame-pointer -fsanitize=undefined,address
 endif
 
-# GLFW
 GLFW = $(BUILD_DIR)/lib/libglfw3.a
-GLFW_PATH = ./third-party/glfw
+GLFW_PATH = ./vendor/glfw
 
-# ImGUI
 IMGUI = $(BUILD_DIR)/libimgui.a
+IMGUI_PATH = ./vendor/imgui
 
 all: libs $(BIN)
 
@@ -50,8 +49,8 @@ $(GLFW):
 	$(MAKE) -C $(GLFW_PATH)/build install
 
 $(IMGUI):
-	$(CXX) $(CXXFLAGS) -o $@ -c ./third-party/imgui/all.cpp
+	$(CXX) $(CXXFLAGS) -o $@ -c $(IMGUI_PATH)/all.cpp
 
 .PHONY: clean
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_DIR) $(GLFW_PATH)/build
