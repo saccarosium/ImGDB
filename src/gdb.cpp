@@ -1,381 +1,330 @@
+namespace gdb {
+
 static ssize_t read_block_maxsize = 0;
-void *GDB_ReadInterpreterBlocks(void *)
+
+void* read_interpreter_blocks(void*)
 {
     // read data from GDB pipe
     size_t insert_idx = 0;
     size_t read_base_idx = 0;
     bool set_read_start_idx = true;
 
-    while (true)
-    {
+    while (true) {
         if (set_read_start_idx)
             read_base_idx = insert_idx;
 
-        if (ArrayCount(gdb.block_data) - insert_idx < 64 * 1024)
-        {
+        if (ArrayCount(g_gdb.block_data) - insert_idx < 64 * 1024) {
             // wrap around to beginning, moving a partially made record if available
             // TODO: is there a function call to see if there is more read data
-            memmove(gdb.block_data, gdb.block_data + read_base_idx, 
-                    insert_idx - read_base_idx);
+            memmove(g_gdb.block_data, g_gdb.block_data + read_base_idx, insert_idx - read_base_idx);
             insert_idx = (insert_idx - read_base_idx);
             read_base_idx = 0;
         }
 
-        ssize_t num_read = read(gdb.fd_in_read, gdb.block_data + insert_idx,
-                                ArrayCount(gdb.block_data) - insert_idx);
-        if (num_read < 0)
-        {
+        ssize_t num_read = read(g_gdb.fd_in_read, g_gdb.block_data + insert_idx,
+            ArrayCount(g_gdb.block_data) - insert_idx);
+        if (num_read < 0) {
             fprintf(stderr, "gdb read %s\n", GetErrorString(errno));
             break;
         }
 
         static int iteration = 0;
-        //printf("~%d~\n%d - num read: %zu \n~%d~\n", iteration,
-        //       (int)gdb.block_data[ insert_idx + num_read - 1 ], 
-        //       (size_t)num_read, iteration);
+        // printf("~%d~\n%d - num read: %zu \n~%d~\n", iteration,
+        //        (int)gdb.block_data[ insert_idx + num_read - 1 ],
+        //        (size_t)num_read, iteration);
 #if defined(DEBUG)
-        printf("~%d~\n%.*s\n~%d~\n", iteration, (int)num_read, 
-               gdb.block_data + insert_idx, iteration);
+        printf(
+            "~%d~\n%.*s\n~%d~\n", iteration, (int)num_read, gdb.block_data + insert_idx, iteration);
 #endif
         iteration++;
         insert_idx += num_read;
 
-        if (gdb.block_data[ insert_idx - 1 ] != '\n')
-        {
+        if (g_gdb.block_data[insert_idx - 1] != '\n') {
             // GDB blocks I've seen have a max of 64k, this record is
             // split across multiple pipe reads
             set_read_start_idx = false;
             continue;
-        }
-        else
-        {
+        } else {
             set_read_start_idx = true;
         }
-
 
         if (read_block_maxsize < num_read)
             read_block_maxsize = num_read;
 
-        pthread_mutex_lock(&gdb.modify_block);
+        pthread_mutex_lock(&g_gdb.modify_block);
 
         Span span = {};
-        span.index = read_base_idx; 
+        span.index = read_base_idx;
         span.length = num_read;
-        gdb.block_spans.push_back(span);
+        g_gdb.block_spans.push_back(span);
 
-        pthread_mutex_unlock(&gdb.modify_block);
+        pthread_mutex_unlock(&g_gdb.modify_block);
 
         // post a change if the binary semaphore is zero
-        int semvalue; 
-        sem_getvalue(gdb.recv_block, &semvalue);
-        if (semvalue == 0) 
-            sem_post(gdb.recv_block);
+        int semvalue;
+        sem_getvalue(g_gdb.recv_block, &semvalue);
+        if (semvalue == 0)
+            sem_post(g_gdb.recv_block);
     }
 
     return NULL;
 }
 
-bool GDB_StartProcess(String gdb_filename, String gdb_args)
+bool start_process(String gdb_filename, String gdb_args)
 {
     int rc = 0;
-    if (!VerifyFileExecutable(gdb_filename.c_str()))
-    {
+    if (!is_executable(gdb_filename.c_str()))
+        return false;
+
+    String version;
+    String gdb_version_command = StringPrintf("%s --version 2>&1", gdb_filename.c_str());
+    if (!InvokeShellCommand(gdb_version_command, version))
+        return false;
+
+    if ((NULL == strstr(version.c_str(), "GNU")) || (NULL == strstr(version.c_str(), "gdb"))) {
+        PrintErrorf("file not GDB %s\n", gdb_filename.c_str());
         return false;
     }
-    else
-    {
-        String version;
-        String gdb_version_command = StringPrintf("%s --version 2>&1", gdb_filename.c_str());
-        if (!InvokeShellCommand(gdb_version_command, version))
-            return false;
 
-        if ((NULL == strstr(version.c_str(), "GNU")) || 
-            (NULL == strstr(version.c_str(), "gdb")) )
-        {
-            PrintErrorf("file not GDB %s\n", gdb_filename.c_str());
-            return false;
+    // TODO: using different versions of machine interpreter
+    String args = gdb_filename + " " + gdb_args + " --interpreter=mi ";
+
+    std::string buf;
+    size_t startoff = 0;
+    size_t spaceoff = 0;
+    size_t bufoff = 0;
+    std::vector<char*> gdb_argv;
+    bool inside_string = false;
+    bool is_whitespace = true;
+
+    // convert args strings to a char * vector, ended with NULL
+    for (size_t i = 0; i < args.size(); i++) {
+        char c = args[i];
+        char p = (i > 0) ? args[i - 1] : '\0';
+        is_whitespace &= (c == ' ' || c == '\t');
+
+        // make sure we don't get a command line arg from inside a user string literal
+        if ((c == '\'' || c == '\"') && p != '\\') {
+            inside_string = !inside_string;
         }
 
-        // TODO: using different versions of machine interpreter
-        String args = gdb_filename + " " + gdb_args + " --interpreter=mi "; 
-
-        std::string buf;
-        size_t startoff = 0;
-        size_t spaceoff = 0;
-        size_t bufoff = 0;
-        std::vector<char *> gdb_argv;
-        bool inside_string = false;
-        bool is_whitespace = true;
-
-        // convert args strings to a char * vector, ended with NULL
-        for (size_t i = 0; i < args.size(); i++)
-        {
-            char c = args[i];
-            char p = (i > 0) ? args[i - 1] : '\0';
-            is_whitespace &= (c == ' ' || c == '\t');
-
-            // make sure we don't get a command line arg from inside a user string literal
-            if ( (c == '\'' || c == '\"') && p != '\\')
-            {
-                inside_string = !inside_string;
+        if (!inside_string && c == ' ') {
+            spaceoff = i;
+            size_t arglen = spaceoff - startoff;
+            if (arglen != 0 && !is_whitespace) {
+                gdb_argv.push_back((char*)bufoff);
+                buf.insert(buf.size(), &args[startoff], arglen);
+                buf.push_back('\0');
+                bufoff += (arglen + 1);
             }
-
-            if (!inside_string && c == ' ')
-            {
-                spaceoff = i;
-                size_t arglen = spaceoff - startoff;
-                if (arglen != 0 && !is_whitespace)
-                {
-                    gdb_argv.push_back((char *)bufoff);
-                    buf.insert(buf.size(), &args[ startoff ], arglen);
-                    buf.push_back('\0');
-                    bufoff += (arglen + 1);
-                }
-                is_whitespace = true;
-                startoff = spaceoff + 1;
-            }
-        }
-
-        // convert base offsets to char pointers
-        gdb_argv.push_back(NULL);
-        for (size_t i = 0; i < gdb_argv.size() - 1; i++)
-        {
-            gdb_argv[i] = (char *)((size_t)gdb_argv[i] + buf.data());
-        }
-
-        // get all the environment variables for the process
-        String env;
-        std::vector<char *> envptr;
-        if (!InvokeShellCommand("printenv", env))
-            return false;
-
-        size_t lineoff = 0;
-
-        for (size_t i = 0; i < env.size(); i++)
-        {
-            if (env[i] == '\n')
-            {
-                envptr.push_back(&env[0] + lineoff);
-                env[i] = '\0';
-                lineoff = i + 1;
-            }
-        }
-
-        envptr.push_back(NULL);
-
-        // start the GDB process
-        posix_spawn_file_actions_t actions = {};
-        posix_spawn_file_actions_init(&actions);
-        posix_spawn_file_actions_adddup2(&actions, gdb.fd_out_read, 0);     // stdin
-        posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 1);     // stdout
-        posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 2);     // stderr
-
-        posix_spawnattr_t attrs = {};
-        posix_spawnattr_init(&attrs);
-
-        rc = posix_spawnp((pid_t *) &gdb.spawned_pid, gdb_filename.c_str(),
-                          &actions, &attrs, gdb_argv.data(), envptr.data());
-        if (rc != 0) 
-        {
-            errno = rc;
-            PrintErrorf("posix_spawnp %s\n", GetErrorString(errno));
-            return false;
-        }
-        else
-        {
-            Printf("spawned %s %s\n", gdb_filename.c_str(), gdb_args.c_str());
+            is_whitespace = true;
+            startoff = spaceoff + 1;
         }
     }
 
-    //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/stevie");
-    //GDB_SendBlocking("-file-exec-and-symbols stevie");
-    //GDB_SendBlocking("-exec-arguments stevie.c");
+    // convert base offsets to char pointers
+    gdb_argv.push_back(NULL);
+    for (size_t i = 0; i < gdb_argv.size() - 1; i++) {
+        gdb_argv[i] = (char*)((size_t)gdb_argv[i] + buf.data());
+    }
+
+    // get all the environment variables for the process
+    String env;
+    std::vector<char*> envptr;
+    if (!InvokeShellCommand("printenv", env))
+        return false;
+
+    size_t lineoff = 0;
+
+    for (size_t i = 0; i < env.size(); i++) {
+        if (env[i] == '\n') {
+            envptr.push_back(&env[0] + lineoff);
+            env[i] = '\0';
+            lineoff = i + 1;
+        }
+    }
+
+    envptr.push_back(NULL);
+
+    // start the GDB process
+    posix_spawn_file_actions_t actions = {};
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, g_gdb.fd_out_read, 0); // stdin
+    posix_spawn_file_actions_adddup2(&actions, g_gdb.fd_in_write, 1); // stdout
+    posix_spawn_file_actions_adddup2(&actions, g_gdb.fd_in_write, 2); // stderr
+
+    posix_spawnattr_t attrs = {};
+    posix_spawnattr_init(&attrs);
+
+    rc = posix_spawnp((pid_t*)&g_gdb.spawned_pid, gdb_filename.c_str(), &actions, &attrs,
+        gdb_argv.data(), envptr.data());
+    if (rc != 0) {
+        errno = rc;
+        PrintErrorf("posix_spawnp %s\n", GetErrorString(errno));
+        return false;
+    } else {
+        Printf("spawned %s %s\n", gdb_filename.c_str(), gdb_args.c_str());
+    }
+
+    // GDB_SendBlocking("-environment-cd
+    // /mnt/c/Users/Kyle/Documents/commercial-codebases/original/stevie");
+    // GDB_SendBlocking("-file-exec-and-symbols stevie");
+    // GDB_SendBlocking("-exec-arguments stevie.c");
 
     // debug GAS
-    //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/binutils/binutils-gdb/gas");
-    //GDB_SendBlocking("-file-exec-and-symbols as-new");
+    // GDB_SendBlocking("-environment-cd
+    // /mnt/c/Users/Kyle/Documents/commercial-codebases/original/binutils/binutils-gdb/gas");
+    // GDB_SendBlocking("-file-exec-and-symbols as-new");
 
-    //GDB_SendBlocking("-environment-cd \"/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32\"");
-    //GDB_SendBlocking("-file-exec-and-symbols advent.out");
-
+    // GDB_SendBlocking("-environment-cd \"/mnt/c/Users/Kyle/Downloads/Chrome
+    // Downloads/ARM/AARCH32\""); GDB_SendBlocking("-file-exec-and-symbols advent.out");
 
     Record rec;
-    if (GDB_SendBlocking("-list-features", rec))
-    {
-        const char *src = rec.buf.c_str();
-        gdb.has_frozen_varobj =                 (NULL != strstr(src, "frozen-varobjs"));
-        gdb.has_pending_breakpoints =           (NULL != strstr(src, "pending-breakpoints"));
-        gdb.has_python_scripting_support =      (NULL != strstr(src, "python"));
-        gdb.has_thread_info =                   (NULL != strstr(src, "thread-info"));
-        gdb.has_data_rw_bytes =                 (NULL != strstr(src, "data-read-memory-bytes"));
-        gdb.has_async_breakpoint_notification = (NULL != strstr(src, "breakpoint-notifications"));
-        gdb.has_ada_task_info =                 (NULL != strstr(src, "ada-task-info"));
-        gdb.has_language_option =               (NULL != strstr(src, "language-option"));
-        gdb.has_gdb_mi_command =                (NULL != strstr(src, "info-gdb-mi-command"));
-        gdb.has_undefined_command_error_code =  (NULL != strstr(src, "undefined-command-error-code"));
-        gdb.has_exec_run_start =                (NULL != strstr(src, "exec-run-start-option"));
-        gdb.has_data_disassemble_option_a =     (NULL != strstr(src, "data-disassemble-a-option"));
 
-        // TODO: "Whenever a target can change, due to commands such as -target-select, 
-        // -target-attach or -exec-run, the list of target features may change, 
+    if (send_blocking("-list-features", rec)) {
+        const char* src = rec.buf.c_str();
+        g_gdb.has_frozen_varobj = (NULL != strstr(src, "frozen-varobjs"));
+        g_gdb.has_pending_breakpoints = (NULL != strstr(src, "pending-breakpoints"));
+        g_gdb.has_python_scripting_support = (NULL != strstr(src, "python"));
+        g_gdb.has_thread_info = (NULL != strstr(src, "thread-info"));
+        g_gdb.has_data_rw_bytes = (NULL != strstr(src, "data-read-memory-bytes"));
+        g_gdb.has_async_breakpoint_notification = (NULL != strstr(src, "breakpoint-notifications"));
+        g_gdb.has_ada_task_info = (NULL != strstr(src, "ada-task-info"));
+        g_gdb.has_language_option = (NULL != strstr(src, "language-option"));
+        g_gdb.has_gdb_mi_command = (NULL != strstr(src, "info-gdb-mi-command"));
+        g_gdb.has_undefined_command_error_code
+            = (NULL != strstr(src, "undefined-command-error-code"));
+        g_gdb.has_exec_run_start = (NULL != strstr(src, "exec-run-start-option"));
+        g_gdb.has_data_disassemble_option_a = (NULL != strstr(src, "data-disassemble-a-option"));
+
+        // TODO: "Whenever a target can change, due to commands such as -target-select,
+        // -target-attach or -exec-run, the list of target features may change,
         // and the frontend should obtain it again
         // GDB_SendBlocking("-list-target-features", rec);
 
-    }
-    else
-    {
+    } else {
         return false;
     }
 
-    gdb.supports_async_execution = GDB_SendBlocking("-gdb-set mi-async");
-    GDB_SendBlocking("-gdb-set non-stop");
+    g_gdb.supports_async_execution = send_blocking("-gdb-set mi-async");
+    send_blocking("-gdb-set non-stop");
 
-    //if (GDB_SendBlocking("-list-target-features", rec))
-    //{
-    //    const char *src = rec.buf.c_str();
-    //    gdb.supports_async_execution =          (NULL != strstr(src, "async"));
-    //    gdb.supports_reverse_execution =        (NULL != strstr(src, "reverse"));
-    //}
-    //else
-    //{
-    //    return false;
-    //}
-
-    if (gdb.fd_ptty_master)
-    {
-        String set_tty = StringPrintf("-inferior-tty-set %s", ptsname(gdb.fd_ptty_master));
-        if (GDB_SendBlocking(set_tty.c_str()))
-        {
-            Printf("set inferior-tty to %s\n", ptsname(gdb.fd_ptty_master));
-        }
-        else
-        {
+    if (g_gdb.fd_ptty_master) {
+        String set_tty = StringPrintf("-inferior-tty-set %s", ptsname(g_gdb.fd_ptty_master));
+        if (send_blocking(set_tty.c_str())) {
+            Printf("set inferior-tty to %s\n", ptsname(g_gdb.fd_ptty_master));
+        } else {
             return false;
         }
     }
 
-    gdb.filename = gdb_filename;
-    gdb.args = gdb_args;
+    g_gdb.filename = gdb_filename;
+    g_gdb.args = gdb_args;
     return true;
 }
 
-bool GDB_SetInferiorExe(String filename)
+bool set_inferior_exe(String filename)
 {
     String s = StringPrintf("-file-exec-and-symbols \"%s\"", filename.c_str());
-    if (!GDB_SendBlocking(s.c_str()))
+    if (!send_blocking(s.c_str()))
         return false;
 
     Printf("set debug exe %s\n", filename.c_str());
-    gdb.debug_filename = filename;
+    g_gdb.debug_filename = filename;
 
     return true;
 }
 
-bool GDB_SetInferiorArgs(String args)
+bool set_inferior_args(String args)
 {
     String s = StringPrintf("-exec-arguments %s", args.c_str());
-    if (!GDB_SendBlocking(s.c_str()))
+    if (!send_blocking(s.c_str()))
         return false;
 
     Printf("set args %s\n", args.c_str());
-    gdb.debug_args = args;
+    g_gdb.debug_args = args;
 
     return true;
 }
 
-bool GDB_LoadInferior(String filename, String args)
+bool load_inferior(String filename, String args)
 {
     bool result = false;
 
     // set the debugged executable
     String str = StringPrintf("-file-exec-and-symbols \"%s\"", filename.c_str());
 
-    if (GDB_SendBlocking(str.c_str()))
-    {
+    if (send_blocking(str.c_str())) {
         // set the command line arguments for the debugged executable
         bool good_args = true;
-        if (args != "")
-        {
+        if (args != "") {
             str = StringPrintf("-exec-arguments %s", args.c_str());
 
-            good_args = GDB_SendBlocking(str.c_str());
+            good_args = send_blocking(str.c_str());
         }
 
         result = good_args;
-        if (result)
-        {
+        if (result) {
             Printf("set debug program: %s %s\n", filename.c_str(), args.c_str());
-            gdb.debug_filename = filename;
-            gdb.debug_args = args;
+            g_gdb.debug_filename = filename;
+            g_gdb.debug_args = args;
         }
     }
 
     return result;
 }
 
-AtomIter GDB_IterChild(const Record &rec, const RecordAtom *parent)
+AtomIter iter_child(const Record& rec, const RecordAtom* parent)
 {
     // allow for fudge factor while iterating child atoms
     // need to fail gracefully for bad/missing msgs
     AtomIter result = {};
 
-    if ( (size_t(parent - rec.atoms.data()) < rec.atoms.size()) &&
-         (parent->type == Atom_Array || parent->type == Atom_Struct) &&
-         (parent->value.index + parent->value.length <= rec.atoms.size()) )
-    {
-        const Span &span = parent->value;
-        result.iter_begin = &rec.atoms[ span.index ];
+    if ((size_t(parent - rec.atoms.data()) < rec.atoms.size())
+        && (parent->type == Atom_Array || parent->type == Atom_Struct)
+        && (parent->value.index + parent->value.length <= rec.atoms.size())) {
+        const Span& span = parent->value;
+        result.iter_begin = &rec.atoms[span.index];
         result.iter_end = result.iter_begin + span.length;
     }
 
     return result;
 }
 
-static AtomType InferAtomStart(char c)
+static AtomType infer_atom_start(char c)
 {
     AtomType result = Atom_None;
-    if (c == '{')
-    {
+    if (c == '{') {
         result = Atom_Struct;
-    }
-    else if (c == '[')
-    {
+    } else if (c == '[') {
         result = Atom_Array;
-    }
-    else if (c == '\"')
-    {
+    } else if (c == '\"') {
         result = Atom_String;
-    }
-    else if ( (c >= 'a' && c <= 'z') || 
-              (c >= 'A' && c <= 'Z') || 
-              (c == '-' || c == '_') )
-    {
+    } else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c == '-' || c == '_')) {
         result = Atom_Name;
     }
 
     return result;
 }
 
-static void PushUnorderedAtom(ParseRecordContext &ctx, RecordAtom atom)
+static void push_unordered_atom(ParseRecordContext& ctx, RecordAtom atom)
 {
-    Assert(ctx.num_end_atoms <= ctx.atoms.size() &&
-           ctx.atom_idx < ctx.atoms.size() - ctx.num_end_atoms);
-    memcpy(&ctx.atoms[ ctx.atom_idx ], &atom, sizeof(atom));
+    Assert(ctx.num_end_atoms <= ctx.atoms.size()
+        && ctx.atom_idx < ctx.atoms.size() - ctx.num_end_atoms);
+    memcpy(&ctx.atoms[ctx.atom_idx], &atom, sizeof(atom));
     ctx.atom_idx++;
 }
 
-static RecordAtom PopUnorderedAtom(ParseRecordContext &ctx, size_t start_idx)
+static RecordAtom pop_unordered_atom(ParseRecordContext& ctx, size_t start_idx)
 {
-    // pop unordered atoms to the end of the array 
+    // pop unordered atoms to the end of the array
     RecordAtom result = {};
     Assert(start_idx <= ctx.atom_idx);
     size_t num_atoms = ctx.atom_idx - start_idx;
     Assert(ctx.atom_idx + num_atoms < ctx.atoms.size());
 
-    RecordAtom *dest = 
-        &ctx.atoms[ ctx.atoms.size() - ctx.num_end_atoms - num_atoms ];
-    memmove(dest, &ctx.atoms[ start_idx ],
-            num_atoms * sizeof(RecordAtom));
+    RecordAtom* dest = &ctx.atoms[ctx.atoms.size() - ctx.num_end_atoms - num_atoms];
+    memmove(dest, &ctx.atoms[start_idx], num_atoms * sizeof(RecordAtom));
 
     ctx.num_end_atoms += num_atoms;
     result.value.length = num_atoms;
@@ -383,33 +332,33 @@ static RecordAtom PopUnorderedAtom(ParseRecordContext &ctx, size_t start_idx)
 
     // clear the popped memory
     ctx.atom_idx -= num_atoms;
-    //memset(ctx.atoms + ctx.atom_idx, 0, num_atoms * sizeof(RecordAtom));
+    // memset(ctx.atoms + ctx.atom_idx, 0, num_atoms * sizeof(RecordAtom));
 
     return result;
 }
 
-static RecordAtom RecurseRecord(ParseRecordContext &ctx)
+static RecordAtom recurse_record(ParseRecordContext& ctx)
 {
-    static const auto RecurseError = [&](const char *message, char error_char)
-    {
+    static const auto RecurseError = [&](const char* message, char error_char) {
         fprintf(stderr, "parse record error: %s\n", message);
         fprintf(stderr, "   before error: %.*s\n", int(ctx.i), ctx.buf);
         fprintf(stderr, "   error char: %c\n", error_char);
-        fprintf(stderr, "   after error: %.*s\n", int(ctx.bufsize - (ctx.i + 1)), ctx.buf + ctx.i + 1);
+        fprintf(
+            stderr, "   after error: %.*s\n", int(ctx.bufsize - (ctx.i + 1)), ctx.buf + ctx.i + 1);
 
         timeval te;
         gettimeofday(&te, NULL); // get current time
-        long long msec = te.tv_sec*1000LL + te.tv_usec/1000; 
+        long long msec = te.tv_sec * 1000LL + te.tv_usec / 1000;
 
-        char filename[128]; 
+        char filename[128];
         tsnprintf(filename, "badrecord_%lld.txt", msec);
 
-        FILE *f = fopen(filename, "wb");
+        FILE* f = fopen(filename, "wb");
         fprintf(f, "error message: %s\n", message);
         fprintf(f, "error index: %zu\n", ctx.i);
         fprintf(f, "%.*s", (int)ctx.bufsize, ctx.buf);
         fclose(f);
-        
+
         // force to end then bail out of here
         Assert(false);
         ctx.error = true;
@@ -420,170 +369,138 @@ static RecordAtom RecurseRecord(ParseRecordContext &ctx)
     size_t string_start_idx = 0;
     size_t aggregate_start_idx = 0;
 
-    for (; ctx.i < ctx.bufsize; ctx.i++)
-    {
-        char c = ctx.buf[ ctx.i ];
+    for (; ctx.i < ctx.bufsize; ctx.i++) {
+        char c = ctx.buf[ctx.i];
 
         // skip over chars outside of string
-        if (result.type != Atom_String && (c == ' ' || c == ',' || c == ';' || c == '_' || c == '\n') ) 
+        if (result.type != Atom_String
+            && (c == ' ' || c == ',' || c == ';' || c == '_' || c == '\n'))
             continue;
 
-        switch (result.type)
-        {
-            case Atom_None:
-            {
-                // figure out what kind of block this is 
-                AtomType start = InferAtomStart(c);
-                if (start == Atom_String)
-                {
-                    // start after " index
-                    string_start_idx = ctx.i + 1;
-                }
-                else if (start == Atom_Name)
-                {
-                    string_start_idx = ctx.i;
-                }
-                else if (start == Atom_Array || start == Atom_Struct)
-                {
-                    // store the start of the aggregates
-                    aggregate_start_idx = ctx.atom_idx;
-                }
-                else if (start == Atom_None)
-                {
-                    RecurseError("can't deduce block type", c);
-                    continue;
-                }
+        switch (result.type) {
+        case Atom_None: {
+            // figure out what kind of block this is
+            AtomType start = infer_atom_start(c);
+            if (start == Atom_String) {
+                // start after " index
+                string_start_idx = ctx.i + 1;
+            } else if (start == Atom_Name) {
+                string_start_idx = ctx.i;
+            } else if (start == Atom_Array || start == Atom_Struct) {
+                // store the start of the aggregates
+                aggregate_start_idx = ctx.atom_idx;
+            } else if (start == Atom_None) {
+                RecurseError("can't deduce block type", c);
+                continue;
+            }
 
-                result.type = start;
+            result.type = start;
 
-            } break;
+        } break;
 
-            case Atom_Name:
-            {
-                if (c == '=')
-                {
-                    // make the string, reset block state
-                    Assert(ctx.i >= string_start_idx);
-                    result.name.index = string_start_idx;
-                    result.name.length = ctx.i - string_start_idx;
-                    result.type = Atom_None;
-                }
-                else if (Atom_Name != InferAtomStart(c))
-                {
-                    RecurseError("hit bad atom name character", c);
-                    continue;
-                }
+        case Atom_Name: {
+            if (c == '=') {
+                // make the string, reset block state
+                Assert(ctx.i >= string_start_idx);
+                result.name.index = string_start_idx;
+                result.name.length = ctx.i - string_start_idx;
+                result.type = Atom_None;
+            } else if (Atom_Name != infer_atom_start(c)) {
+                RecurseError("hit bad atom name character", c);
+                continue;
+            }
 
-            } break;
+        } break;
 
-            case Atom_String:
-            {
-                // TODO: pointer previews of strings are messing this up
-                //       ex: value="0x555555556004 "%d""
-                char n = '\0';
-                char p = '\0';
-                if (ctx.i + 1 < ctx.bufsize)
-                    n = ctx.buf[ ctx.i + 1 ];
-                if (ctx.i >= 1)
-                    p = ctx.buf[ ctx.i - 1 ];
+        case Atom_String: {
+            // TODO: pointer previews of strings are messing this up
+            //       ex: value="0x555555556004 "%d""
+            char n = '\0';
+            char p = '\0';
+            if (ctx.i + 1 < ctx.bufsize)
+                n = ctx.buf[ctx.i + 1];
+            if (ctx.i >= 1)
+                p = ctx.buf[ctx.i - 1];
 
-                if (c == '"' && p != '\\' && (n == ',' || n == '}' || n == ']'))
-                {
-                    // hit closing quote
-                    // make the string, advance idx, return
-                    Assert(ctx.i >= string_start_idx);
-                    result.value.index = string_start_idx;
-                    result.value.length = ctx.i - string_start_idx;
+            if (c == '"' && p != '\\' && (n == ',' || n == '}' || n == ']')) {
+                // hit closing quote
+                // make the string, advance idx, return
+                Assert(ctx.i >= string_start_idx);
+                result.value.index = string_start_idx;
+                result.value.length = ctx.i - string_start_idx;
+                return result;
+            }
+        } break;
+
+        case Atom_Array:
+        case Atom_Struct: {
+            AtomType start = infer_atom_start(c);
+
+            if (start != Atom_None) {
+                // start of new elem, recurse and add
+                RecordAtom elem = recurse_record(ctx);
+                push_unordered_atom(ctx, elem);
+            } else if (c == ']' || c == '}') {
+                if ((c == ']' && result.type != Atom_Array)
+                    || (c == '}' && result.type != Atom_Struct)) {
+                    // hit wrong ending character
+                    char buf[128] = {};
+                    const char* type_str = (result.type == Atom_Array) ? "array" : "struct";
+                    tsnprintf(buf, "wrong ending character for %s", type_str);
+                    RecurseError(buf, c);
+                } else {
+                    // end of aggregate, pop from unordered and store in gdb
+                    RecordAtom pop = pop_unordered_atom(ctx, aggregate_start_idx);
+                    result.value.index = pop.value.index;
+                    result.value.length = pop.value.length;
                     return result;
                 }
-            } break;
+            } else {
+                RecurseError("hit bad aggregate char", c);
+                continue;
+            }
 
-            case Atom_Array:
-            case Atom_Struct:
-            {
-                AtomType start = InferAtomStart(c);
-
-                if (start != Atom_None)
-                {
-                    // start of new elem, recurse and add
-                    RecordAtom elem = RecurseRecord(ctx);
-                    PushUnorderedAtom(ctx, elem);
-                }
-                else if (c == ']' || c == '}')
-                {
-                    if ((c == ']' && result.type != Atom_Array) ||
-                        (c == '}' && result.type != Atom_Struct))
-                    {
-                        // hit wrong ending character
-                        char buf[128] = {};
-                        const char *type_str = (result.type == Atom_Array) ? "array" : "struct";
-                        tsnprintf(buf, "wrong ending character for %s", type_str);
-                        RecurseError(buf, c);
-                    }
-                    else
-                    {
-                        // end of aggregate, pop from unordered and store in gdb 
-                        RecordAtom pop = PopUnorderedAtom(ctx, aggregate_start_idx);
-                        result.value.index = pop.value.index;
-                        result.value.length = pop.value.length;
-                        return result;
-                    }
-                }
-                else
-                {
-                    RecurseError("hit bad aggregate char", c);
-                    continue;
-                }
-
-            } break;
+        } break;
         }
     }
 
     return result;
 }
 
-RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
+RecordAtomSequence recurse_evaluation(ParseRecordContext& ctx)
 {
     // parse the atom of a -data-evaluate-expression
-    // close to a GDB record, but not quite the same differences being: 
+    // close to a GDB record, but not quite the same differences being:
     // -not packed, there are spaces in the buffer
     // -array has {} syntax instead of []
     // -for arrays, if there are more than 200 elements it ends in "...}"
     // -run length for arrays ex: {0 <repeats 1024 times>}
 
-    const auto EvaluateRunLength = [&](size_t &rle_last_idx, 
-                                       size_t &rle_num_repeat) -> bool
-    {
+    const auto EvaluateRunLength = [&](size_t& rle_last_idx, size_t& rle_num_repeat) -> bool {
         bool atom = false;
-        if (ctx.i + 10 < ctx.bufsize &&
-            0 == strcmp(&ctx.buf[ ctx.i + 2 ], "<repeats "))
-        {
+        if (ctx.i + 10 < ctx.bufsize && 0 == strcmp(&ctx.buf[ctx.i + 2], "<repeats ")) {
             // TODO: make run length atom that precedes an atom array/value with
             // a <repeats XXX times> string appended to it
             // Options:
             // 1. carry around run length signifier in atom
-            // 2. expand <repeats XXX times> text out 
+            // 2. expand <repeats XXX times> text out
 
             atom = true;
             rle_num_repeat = 0;
             size_t dig_idx = ctx.i + 10 + 1;
-            for (; dig_idx < ctx.bufsize; dig_idx++)
-            {
-                char c = ctx.buf[ dig_idx ];
-                if (c >= '0' && c <= '9')
-                {
+            for (; dig_idx < ctx.bufsize; dig_idx++) {
+                char c = ctx.buf[dig_idx];
+                if (c >= '0' && c <= '9') {
                     rle_num_repeat *= 10;
                     rle_num_repeat += (c - '0');
-                }
-                else 
-                {
+                } else {
                     Assert(c == ' ');
                     break;
                 }
             }
 
             // skip over " times>"
-            Assert(ctx.buf[ dig_idx ] == ' ');
+            Assert(ctx.buf[dig_idx] == ' ');
             rle_last_idx = dig_idx + 6;
         }
 
@@ -592,7 +509,7 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
 
     RecordAtomSequence sequence = {};
     sequence.length = 1;
-    RecordAtom &atom = sequence.atom;
+    RecordAtom& atom = sequence.atom;
     size_t string_start_idx = 0;
     size_t aggregate_start_idx = 0;
     bool inside_string_literal = false;
@@ -600,22 +517,20 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
     size_t rle_num_repeat = 0;
     size_t num_children = 0;
 
-    for (; ctx.i < ctx.bufsize; ctx.i++)
-    {
-        char c = ctx.buf[ ctx.i ];
-        char p = (ctx.i > 1) ? ctx.buf[ ctx.i - 1 ] : '\0';
-        char pp = (ctx.i > 2) ? ctx.buf[ ctx.i - 2 ] : '\0';
-        char n = (ctx.i + 1 < ctx.bufsize) ? ctx.buf[ ctx.i + 1 ] : '\0';
-        char nn = (ctx.i + 2 < ctx.bufsize) ? ctx.buf[ ctx.i + 2 ] : '\0';
+    for (; ctx.i < ctx.bufsize; ctx.i++) {
+        char c = ctx.buf[ctx.i];
+        char p = (ctx.i > 1) ? ctx.buf[ctx.i - 1] : '\0';
+        char pp = (ctx.i > 2) ? ctx.buf[ctx.i - 2] : '\0';
+        char n = (ctx.i + 1 < ctx.bufsize) ? ctx.buf[ctx.i + 1] : '\0';
+        char nn = (ctx.i + 2 < ctx.bufsize) ? ctx.buf[ctx.i + 2] : '\0';
         if (pp != '\\' && p == '\\' && c == '\"')
             inside_string_literal = !inside_string_literal;
 
         if (inside_string_literal)
             continue;
 
-        if (EvaluateRunLength(rle_last_idx, rle_num_repeat) &&
-            (atom.type == Atom_Name || atom.type == Atom_String))
-        {
+        if (EvaluateRunLength(rle_last_idx, rle_num_repeat)
+            && (atom.type == Atom_Name || atom.type == Atom_String)) {
             // not a Atom_Name, actually an Atom_String
             Assert(ctx.i >= string_start_idx);
             atom.type = Atom_String;
@@ -628,53 +543,37 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
             return sequence;
         }
 
+        switch (atom.type) {
 
-
-        switch (atom.type)
-        {
-
-        case Atom_None:
-        {
-            if (c == ' ' || c == ',')
-            {
+        case Atom_None: {
+            if (c == ' ' || c == ',') {
                 continue;
-            }
-            else if (c == '{')
-            {
+            } else if (c == '{') {
                 // store the start of the aggregates
                 aggregate_start_idx = ctx.atom_idx;
                 atom.type = Atom_Struct;
-            }
-            else
-            {
+            } else {
                 string_start_idx = ctx.i;
-                if ((n == ',' || n == '}' || nn == '<') && ctx.i > 0) 
+                if ((n == ',' || n == '}' || nn == '<') && ctx.i > 0)
                     ctx.i--; // single digit elements like {0, 1, 2}
 
-                if (atom.name.length == 0)
-                {
+                if (atom.name.length == 0) {
                     atom.type = Atom_Name;
-                }
-                else
-                {
+                } else {
                     atom.type = Atom_String;
                 }
             }
         } break;
 
-        case Atom_Name:
-        {
+        case Atom_Name: {
 
-            if (c == '=')
-            {
+            if (c == '=') {
                 // name = value, -1 to step back to space index
                 Assert(ctx.i - 1 >= string_start_idx);
                 atom.name.index = string_start_idx;
                 atom.name.length = (ctx.i - 1) - string_start_idx;
                 atom.type = Atom_None;
-            }
-            else if (n == ',' || n == '}')
-            {
+            } else if (n == ',' || n == '}') {
                 // not a Atom_Name, actually an Atom_String
                 Assert(ctx.i >= string_start_idx);
                 atom.type = Atom_String;
@@ -684,10 +583,8 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
             }
         } break;
 
-        case Atom_String:
-        {
-            if (n == ',' || n == '}')
-            {
+        case Atom_String: {
+            if (n == ',' || n == '}') {
                 Assert(ctx.i >= string_start_idx);
                 atom.value.index = string_start_idx;
                 atom.value.length = (ctx.i + 1) - string_start_idx;
@@ -697,40 +594,32 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
         } break;
 
         case Atom_Array:
-        case Atom_Struct:
-        {
-            if (c == '}')
-            {
-                // end of aggregate, pop from unordered and store in gdb 
-                RecordAtom pop = PopUnorderedAtom(ctx, aggregate_start_idx);
+        case Atom_Struct: {
+            if (c == '}') {
+                // end of aggregate, pop from unordered and store in gdb
+                RecordAtom pop = pop_unordered_atom(ctx, aggregate_start_idx);
                 atom.value.index = pop.value.index;
                 atom.value.length = pop.value.length;
 
-                if (EvaluateRunLength(rle_last_idx, rle_num_repeat))
-                {
+                if (EvaluateRunLength(rle_last_idx, rle_num_repeat)) {
                     ctx.i = rle_last_idx;
                     sequence.length = rle_num_repeat;
                 }
 
                 return sequence;
-            }
-            else
-            {
+            } else {
                 // start of new elem, recurse and add
                 size_t saved_num_end_atoms = ctx.num_end_atoms;
-                RecordAtomSequence elem = GDB_RecurseEvaluation(ctx);
+                RecordAtomSequence elem = gdb::recurse_evaluation(ctx);
                 if (elem.atom.name.length == 0)
                     atom.type = Atom_Array;
 
-                if (num_children < AGGREGATE_MAX)
-                {
+                if (num_children < AGGREGATE_MAX) {
                     size_t addcount = GetMin(elem.length, AGGREGATE_MAX - num_children);
                     for (size_t i = 0; i < addcount; i++)
-                        PushUnorderedAtom(ctx, elem.atom);
+                        push_unordered_atom(ctx, elem.atom);
                     num_children += addcount;
-                }
-                else
-                {
+                } else {
                     // no atoms added, remove any child in order pushes
                     // to the end of the array
                     ctx.num_end_atoms = saved_num_end_atoms;
@@ -746,155 +635,131 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
     return sequence;
 }
 
-
-void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter, 
-                         int tab_level, FILE *out)
+void print_record_atom(const Record& rec, const RecordAtom& iter, int tab_level, FILE* out)
 {
     for (int i = 0; i < tab_level; i++)
         fprintf(out, "  ");
 
-    switch (iter.type)
+    switch (iter.type) {
+    case Atom_String: // key value pair
     {
-        case Atom_String:  // key value pair
-        {
-            fprintf(out, "%.*s=\"%.*s\"\n",
-                    int(iter.name.length), &rec.buf[ iter.name.index ],
-                    int(iter.value.length), &rec.buf[ iter.value.index ]);
-        } break;
+        fprintf(out, "%.*s=\"%.*s\"\n", int(iter.name.length), &rec.buf[iter.name.index],
+            int(iter.value.length), &rec.buf[iter.value.index]);
+    } break;
 
-        case Atom_Struct:
-        case Atom_Array:
-        {
-            fprintf(out, "%.*s\n", int(iter.name.length), 
-                    &rec.buf[ iter.name.index ]);
+    case Atom_Struct:
+    case Atom_Array: {
+        fprintf(out, "%.*s\n", int(iter.name.length), &rec.buf[iter.name.index]);
 
-            for (const RecordAtom &child : GDB_IterChild(rec, &iter))
-            {
-                GDB_PrintRecordAtom(rec, child, tab_level + 1, out);
-            }
+        for (const RecordAtom& child : iter_child(rec, &iter)) {
+            print_record_atom(rec, child, tab_level + 1, out);
+        }
 
-        } break;
-        default:
-            fprintf(out, "---BAD ATOM TYPE---\n");
+    } break;
+    default:
+        fprintf(out, "---BAD ATOM TYPE---\n");
     }
 }
 
-const RecordAtom *GDB_ExtractAtom(const char *name, size_t namelen, 
-                                  size_t name_idx, const RecordAtom &iter,
-                                  const Record &rec)
+const RecordAtom* extract_atom(
+    const char* name, size_t namelen, size_t name_idx, const RecordAtom& iter, const Record& rec)
 {
     // copy segment of full name to temp buffer
     char temp[256] = {};
-    const char *dotpos = strchr(name + name_idx, '.');
+    const char* dotpos = strchr(name + name_idx, '.');
     size_t end_idx = (dotpos != NULL) ? dotpos - name : namelen;
     memcpy(temp, name + name_idx, end_idx - name_idx);
 
     unsigned long long index = ~0;
-    char *bracket;
-    if ( (bracket = strchr(temp, '[')) )
-    {
+    char* bracket;
+    if ((bracket = strchr(temp, '['))) {
         int num_found = sscanf(bracket, "[%llu]", &index);
-        if (num_found != 1)
-        {
+        if (num_found != 1) {
             PrintError("sscanf error\n");
-        }
-        else
-        {
+        } else {
             size_t bracket_offset = bracket - temp;
             memset(bracket, '\0', sizeof(temp) - bracket_offset);
         }
     }
     size_t tempsize = strlen(temp);
 
-    for (const RecordAtom &child : GDB_IterChild(rec, &iter))
-    {
-        if (index < child.value.length && child.type == Atom_Array)
-        {
+    for (const RecordAtom& child : iter_child(rec, &iter)) {
+        if (index < child.value.length && child.type == Atom_Array) {
             // array[] syntax, select n'th child
-            const RecordAtom *child_base = 
-                &rec.atoms[ child.value.index ];
-            return GDB_ExtractAtom(name, namelen, end_idx + 1,
-                                   child_base[index], rec);
-        }
-        else if (child.name.length == tempsize &&
-                 0 == memcmp(temp, &rec.buf[ child.name.index ], tempsize))
-        {
-            if (end_idx == namelen)
-            {
+            const RecordAtom* child_base = &rec.atoms[child.value.index];
+            return extract_atom(name, namelen, end_idx + 1, child_base[index], rec);
+        } else if (child.name.length == tempsize
+            && 0 == memcmp(temp, &rec.buf[child.name.index], tempsize)) {
+            if (end_idx == namelen) {
                 // found the target
                 return &child;
-            }
-            else
-            {
-                return GDB_ExtractAtom(name, namelen, end_idx + 1, child, rec);
+            } else {
+                return extract_atom(name, namelen, end_idx + 1, child, rec);
             }
         }
     }
     return NULL;
 }
 
-String GDB_ExtractValue(const char *keyname, const RecordAtom &root, const Record &rec)
+String extract_value(const char* keyname, const RecordAtom& root, const Record& rec)
 {
     String result = "";
-    const RecordAtom *target = GDB_ExtractAtom(keyname, strlen(keyname), 0, root, rec);
-    if (target)
-    {
+    const RecordAtom* target = extract_atom(keyname, strlen(keyname), 0, root, rec);
+    if (target) {
         Assert(target->type == Atom_String);
-        result = GetAtomString(target->value, rec);
+        result = get_atom_string(target->value, rec);
     }
     return result;
 }
 
-int GDB_ExtractInt(const char *name, const RecordAtom &root, const Record &rec)
+int extract_int(const char* name, const RecordAtom& root, const Record& rec)
 {
     int result = 0;
-    const RecordAtom *target = GDB_ExtractAtom(name, strlen(name), 0, root, rec);
-    if (target)
-    {
+    const RecordAtom* target = extract_atom(name, strlen(name), 0, root, rec);
+    if (target) {
         Assert(target->type == Atom_String);
-        result = atoi( GDB_ExtractValue(name, root, rec).c_str() );
+        result = atoi(extract_value(name, root, rec).c_str());
     }
     return result;
 }
 
-const RecordAtom *GDB_ExtractAtom(const char *name, const RecordAtom &root,
-                                  const Record &rec)
+const RecordAtom* extract_atom(const char* name, const RecordAtom& root, const Record& rec)
 {
-    const RecordAtom *result = GDB_ExtractAtom(name, strlen(name), 0, root, rec);
+    const RecordAtom* result = extract_atom(name, strlen(name), 0, root, rec);
     return result;
 }
 
-// 
+//
 // helper functions
 //
-String GDB_ExtractValue(const char *name, const Record &rec)
+String extract_value(const char* name, const Record& rec)
 {
-    return (rec.atoms.size() == 0) ? "" : GDB_ExtractValue(name, rec.atoms[0], rec);
-}
-int GDB_ExtractInt(const char *name, const Record &rec)
-{
-    return (rec.atoms.size() == 0) ? 0 : GDB_ExtractInt(name, rec.atoms[0], rec);
-}
-const RecordAtom *GDB_ExtractAtom(const char *name, const Record &rec)
-{
-    return (rec.atoms.size() == 0) ? NULL : GDB_ExtractAtom(name, rec.atoms[0], rec);
+    return (rec.atoms.size() == 0) ? "" : extract_value(name, rec.atoms[0], rec);
 }
 
-void IterateAtoms(Record &rec, RecordAtom &iter, AtomIterator *iterator, void *ctx)
+int extract_int(const char* name, const Record& rec)
+{
+    return (rec.atoms.size() == 0) ? 0 : extract_int(name, rec.atoms[0], rec);
+}
+
+const RecordAtom* extract_atom(const char* name, const Record& rec)
+{
+    return (rec.atoms.size() == 0) ? NULL : extract_atom(name, rec.atoms[0], rec);
+}
+
+void iterate_atoms(Record& rec, RecordAtom& iter, AtomIterator* iterator, void* ctx)
 {
     Assert(iter.type == Atom_Struct || iter.type == Atom_Array);
-    for (size_t i = 0; i < iter.value.length; i++)
-    {
-        RecordAtom &child = rec.atoms[iter.value.index + i];
+    for (size_t i = 0; i < iter.value.length; i++) {
+        RecordAtom& child = rec.atoms[iter.value.index + i];
         iterator(rec, child, ctx);
-        if (child.type == Atom_Struct || child.type == Atom_Array)
-        {
-            IterateAtoms(rec, child, iterator, ctx);
+        if (child.type == Atom_Struct || child.type == Atom_Array) {
+            iterate_atoms(rec, child, iterator, ctx);
         }
     }
 }
 
-bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx)
+bool parse_record(char* buf, size_t bufsize, ParseRecordContext& ctx)
 {
     // parse async/sync record
     ctx = {};
@@ -902,16 +767,15 @@ bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx)
     ctx.bufsize = bufsize;
 
     // get the record keyword, immediately after type prefix
-    char *comma = (char *)memchr(buf, ',', bufsize);
+    char* comma = (char*)memchr(buf, ',', bufsize);
     RecordAtom root = {};
 
-    if (comma)
-    {
+    if (comma) {
         ctx.i = comma - buf;
 
         // this is a record with child elements
         // convert the root atom into an array
-        char *last = buf + bufsize - 1;
+        char* last = buf + bufsize - 1;
         char prev_comma = *comma;
         char prev_eol = *last;
         *comma = '[';
@@ -919,36 +783,30 @@ bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx)
 
         // scan the buffer to the the total amount of atoms
         size_t num_atoms_found = 0;
-        for (size_t i = 0; i < ctx.bufsize; i++)
-        {
+        for (size_t i = 0; i < ctx.bufsize; i++) {
             char n = (i + 1 < ctx.bufsize) ? ctx.buf[i + 1] : '\0';
             char c = ctx.buf[i];
-            if ((c == '[' || c == '{') || 
-                (c == '=' && n == '"') || 
-                (c == '"' && n == ',') )
+            if ((c == '[' || c == '{') || (c == '=' && n == '"') || (c == '"' && n == ','))
                 num_atoms_found++;
         }
 
         // total=(name+value atoms) * num atoms
         ctx.atoms.resize(num_atoms_found * 2);
 
-        root = RecurseRecord(ctx);
+        root = recurse_record(ctx);
 
         // restore the modified chars
         *comma = prev_comma;
-        *last = prev_eol;    // @@@ case where no comma is found problem
+        *last = prev_eol; // @@@ case where no comma is found problem
 
-    }
-    else
-    {
+    } else {
         // this is a prefix-one word record i.e. ^done
         ctx.error = false;
-        ctx.atoms.resize(1);    // root
+        ctx.atoms.resize(1); // root
     }
 
-    if (!ctx.error)
-    {
-        // put the root in place since it doesn't get popped to the 
+    if (!ctx.error) {
+        // put the root in place since it doesn't get popped to the
         // ordered section of the array
         ctx.num_end_atoms++;
 
@@ -956,15 +814,13 @@ bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx)
         // subtract the difference from base ordered
         Assert(ctx.num_end_atoms <= ctx.atoms.size());
         size_t ordered_offset = ctx.atoms.size() - ctx.num_end_atoms;
-        RecordAtom *ordered_base = &ctx.atoms[ ordered_offset ];
+        RecordAtom* ordered_base = &ctx.atoms[ordered_offset];
         ordered_base[0] = root;
 
-        for (size_t i = 0; i < ctx.num_end_atoms; i++)
-        {
-            RecordAtom *iter = &ordered_base[i];
-            if ( (iter->type == Atom_Array || iter->type == Atom_Struct) &&
-                 (iter->value.length != 0))
-            {
+        for (size_t i = 0; i < ctx.num_end_atoms; i++) {
+            RecordAtom* iter = &ordered_base[i];
+            if ((iter->type == Atom_Array || iter->type == Atom_Struct)
+                && (iter->value.length != 0)) {
                 // adjust aggregate offset
                 Assert(iter->value.index > ordered_offset);
                 iter->value.index -= ordered_offset;
@@ -979,42 +835,31 @@ bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx)
     return !ctx.error;
 }
 
-bool GDB_Send(const char *cmd)
+bool send(const char* cmd)
 {
     bool result = false;
     size_t cmdsize = strlen(cmd);
 
-    if (gdb.spawned_pid == 0)
-    {
+    if (g_gdb.spawned_pid == 0) {
         Print("GDB process not started\n");
-    }
-    else if (prog.running && !gdb.supports_async_execution)
-    {
+    } else if (prog.running && !g_gdb.supports_async_execution) {
         Print("target doesn't support async execution\n");
-    }
-    else
-    {
+    } else {
         // write to GDB
-        ssize_t written = write(gdb.fd_out_write, cmd, cmdsize);
-        if (written != (ssize_t)cmdsize)
-        {
+        ssize_t written = write(g_gdb.fd_out_write, cmd, cmdsize);
+        if (written != (ssize_t)cmdsize) {
             if (written < 0)
                 PrintErrorf("GDB_Send %s\n", GetErrorString(errno));
             else
                 PrintError("GDB_Send truncate\n");
-        }
-        else
-        {
-            written = write(gdb.fd_out_write, "\n", 1);
-            if (written != 1)
-            {
+        } else {
+            written = write(g_gdb.fd_out_write, "\n", 1);
+            if (written != 1) {
                 if (written < 0)
                     PrintErrorf("GDB_Send %s\n", GetErrorString(errno));
                 else
                     PrintError("GDB_Send truncate\n");
-            }
-            else
-            {
+            } else {
                 result = true;
             }
         }
@@ -1023,59 +868,45 @@ bool GDB_Send(const char *cmd)
     return result;
 }
 
-static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
+static size_t send_blocking_internal(const char* cmd, bool remove_after)
 {
-    uint32_t this_record_id = gdb.record_id++;
+    uint32_t this_record_id = g_gdb.record_id++;
     char fullrecord[8 * 1024];
     tsnprintf(fullrecord, "%u%s", this_record_id, cmd);
     size_t result = BAD_INDEX;
 
-    if (GDB_Send(fullrecord))
-    {
+    if (send(fullrecord)) {
         bool found = false;
-        do
-        {
+        do {
             timeval tmp = {};
             timespec wait_for = {};
-            if (0 == gettimeofday(&tmp, NULL))
-            {
+            if (0 == gettimeofday(&tmp, NULL)) {
                 wait_for.tv_sec = tmp.tv_sec + 1;
                 wait_for.tv_nsec = tmp.tv_usec * 1000;
             }
 
-            int rc = sem_timedwait(gdb.recv_block, &wait_for);
-            if (rc < 0)
-            {
-                if (errno == ETIMEDOUT)
-                {
+            int rc = sem_timedwait(g_gdb.recv_block, &wait_for);
+            if (rc < 0) {
+                if (errno == ETIMEDOUT) {
                     // TODO: retry counts
                     PrintErrorf("Command Timeout %s\n", cmd);
-                }
-                else
-                {
+                } else {
                     PrintErrorf("sem_timedwait %s\n", GetErrorString(errno));
                 }
 
                 break;
-            }
-            else
-            {
-                GDB_GrabBlockData();
+            } else {
+                grab_block_data();
 
                 // scan the lines for a result record, mark it as read
                 // to prevent later processing
-                for (size_t i = 0; i < prog.num_recs; i++)
-                {
-                    RecordHolder &iter = prog.read_recs[i];
-                    if (!iter.parsed && iter.rec.id == this_record_id)
-                    {
-                        if ("error" == GDB_GetRecordAction(iter.rec))
-                        {
+                for (size_t i = 0; i < prog.num_recs; i++) {
+                    RecordHolder& iter = prog.read_recs[i];
+                    if (!iter.parsed && iter.rec.id == this_record_id) {
+                        if ("error" == get_record_action(iter.rec)) {
                             iter.parsed = true;
                             result = BAD_INDEX;
-                        }
-                        else
-                        {
+                        } else {
                             iter.parsed = remove_after;
                             result = i;
                         }
@@ -1090,31 +921,28 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
     }
 
     // reset to default ignoring "no symbol in context" GDB MI error
-    gdb.echo_next_no_symbol_in_context = false;
+    g_gdb.echo_next_no_symbol_in_context = false;
 
     return result;
 }
 
-bool GDB_SendBlocking(const char *cmd, bool remove_after)
+bool send_blocking(const char* cmd, bool remove_after)
 {
-    size_t index = GDB_SendBlockingInternal(cmd, remove_after);
+    size_t index = send_blocking_internal(cmd, remove_after);
     return (index < prog.read_recs.size());
 }
 
-bool GDB_SendBlocking(const char *cmd, Record &rec)
+bool send_blocking(const char* cmd, Record& rec)
 {
     // errno or result record index
-    size_t index = GDB_SendBlockingInternal(cmd, false);
+    size_t index = send_blocking_internal(cmd, false);
     bool result;
 
-    if (index < prog.read_recs.size())
-    {
+    if (index < prog.read_recs.size()) {
         rec = prog.read_recs[index].rec;
         prog.read_recs[index].parsed = true;
         result = true;
-    }
-    else
-    {
+    } else {
         rec = {};
         result = false;
     }
@@ -1122,73 +950,61 @@ bool GDB_SendBlocking(const char *cmd, Record &rec)
     return result;
 }
 
-static void GDB_ProcessBlock(char *block, size_t blocksize)
+static void process_block(char* block, size_t blocksize)
 {
     // parse buffer of interpreter lines ending in (gdb)
-    // sync/async records get stored 
+    // sync/async records get stored
     // console/debug logs get written to log_lines
     size_t block_idx = 0;
-    while (block_idx < blocksize)
-    {
+    while (block_idx < blocksize) {
         // parse the optional id preceding the record
         uint32_t this_record_id = 0;
-        while (block_idx < blocksize)
-        {
-            char c = block[ block_idx ];
-            if (c >= '0' && c <= '9')
-            {
+        while (block_idx < blocksize) {
+            char c = block[block_idx];
+            if (c >= '0' && c <= '9') {
                 this_record_id *= 10;
                 this_record_id += (c - '0');
                 block_idx++;
-            }
-            else
-            {
+            } else {
                 break;
             }
         }
 
-        char *start = block + block_idx;
-        char *eol = strchr(start, '\n');
-        if (eol)
-        {
-            if (eol[-1] == '\r')
-            {
+        char* start = block + block_idx;
+        char* eol = strchr(start, '\n');
+        if (eol) {
+            if (eol[-1] == '\r') {
                 eol[-1] = ' ';
             }
             eol[0] = ' ';
 
             eol++; // GDB_ParseRecord inserts a ']' at the end
-        }
-        else
-        {
+        } else {
             // all records should be NL terminated
             Assert(false);
             break;
         }
 
         size_t linesize = eol - start;
-        bool is_prompt = (linesize >= 5 && (0 == memcmp(start, "(gdb)", 5)) );
+        bool is_prompt = (linesize >= 5 && (0 == memcmp(start, "(gdb)", 5)));
         if (!is_prompt)
             WriteToConsoleBuffer(start, linesize);
 
         // get the record type
         char prefix = start[0];
-        if (prefix == PREFIX_RESULT || prefix == PREFIX_ASYNC0 || prefix == PREFIX_ASYNC1) 
-        {
+        if (prefix == PREFIX_RESULT || prefix == PREFIX_ASYNC0 || prefix == PREFIX_ASYNC1) {
             static ParseRecordContext ctx;
-            if ( GDB_ParseRecord(start, linesize, ctx) )
-            {
-                if (prog.read_recs.size() < prog.num_recs + 1)
-                {
+            if (parse_record(start, linesize, ctx)) {
+                if (prog.read_recs.size() < prog.num_recs + 1) {
                     size_t newcount = (prog.num_recs + 1) * 4;
                     prog.read_recs.resize(newcount);
                 }
 
-                RecordHolder &out = prog.read_recs[ prog.num_recs ];
+                RecordHolder& out = prog.read_recs[prog.num_recs];
                 out = {};
                 prog.num_recs++;
 
-                Record &rec = out.rec;
+                Record& rec = out.rec;
                 rec.atoms = ctx.atoms;
                 rec.buf.resize(linesize);
                 rec.id = this_record_id;
@@ -1196,34 +1012,32 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
 
                 // resolve literal within strings
                 // ignore those of name "value" because these get handled in RecurseEvaluation
-                const auto RemoveStringBackslashes = [](Record &record, RecordAtom &iter, void * /* user context */)
-                {
-                    if (iter.type == Atom_String)
-                    {
+                const auto RemoveStringBackslashes = [](Record& record, RecordAtom& iter,
+                                                         void* /* user context */) {
+                    if (iter.type == Atom_String) {
                         size_t new_length = iter.value.length;
-                        for (size_t i = 0; i < iter.value.length; i++)
-                        {
+                        for (size_t i = 0; i < iter.value.length; i++) {
                             size_t buf_idx = iter.value.index + i;
                             char c = record.buf[buf_idx];
                             char n = (i + 1 < iter.value.length) ? record.buf[buf_idx + 1] : '\0';
-                            if (c == '\\' && (n == '\\' || n == '\"'))
-                            {
-                                //record.buf[iter.value.index + new_length - 1] = ' ';
-                                memmove(&record.buf[buf_idx], &record.buf[buf_idx + 1], iter.value.length - (i + 1));
+                            if (c == '\\' && (n == '\\' || n == '\"')) {
+                                // record.buf[iter.value.index + new_length - 1] = ' ';
+                                memmove(&record.buf[buf_idx], &record.buf[buf_idx + 1],
+                                    iter.value.length - (i + 1));
                                 new_length--;
                             }
                         }
                         iter.value.length = new_length;
-                    }      
+                    }
                 };
 
                 if (rec.atoms.size() > 1)
-                    IterateAtoms(rec, rec.atoms[0], RemoveStringBackslashes, NULL);
+                    iterate_atoms(rec, rec.atoms[0], RemoveStringBackslashes, NULL);
 
-                //printf("[added %d] %d: %s\n", 
-                //       (int)(out - &prog.read_recs[0]), (int)rec.id, rec.buf.c_str());
-                // @Debug
-                //GDB_PrintRecordAtom(rec, rec.atoms[0], 0);
+                // printf("[added %d] %d: %s\n",
+                //        (int)(out - &prog.read_recs[0]), (int)rec.id, rec.buf.c_str());
+                //  @Debug
+                // GDB_PrintRecordAtom(rec, rec.atoms[0], 0);
             }
         }
 
@@ -1232,13 +1046,11 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
     }
 }
 
-String GDB_GetRecordAction(const Record &rec)
+String get_record_action(const Record& rec)
 {
     String result;
     size_t comma = 0;
-    if (rec.buf.size() > 0 &&
-        rec.buf.size() > (comma = rec.buf.find(',')) )
-    {
+    if (rec.buf.size() > 0 && rec.buf.size() > (comma = rec.buf.find(','))) {
         size_t start = 1;
         result = rec.buf.substr(start, comma - start);
     }
@@ -1246,62 +1058,53 @@ String GDB_GetRecordAction(const Record &rec)
     return result;
 }
 
-void GDB_GrabBlockData()
+void grab_block_data()
 {
-    pthread_mutex_lock(&gdb.modify_block);
+    pthread_mutex_lock(&g_gdb.modify_block);
 
     // process the newline terminated records read from the other thread
-    for (Span &iter : gdb.block_spans)
-    {
-        GDB_ProcessBlock(gdb.block_data + iter.index, iter.length);
+    for (Span& iter : g_gdb.block_spans) {
+        process_block(g_gdb.block_data + iter.index, iter.length);
     }
 
-    gdb.block_spans.clear();
+    g_gdb.block_spans.clear();
 
     // process any errors found
     size_t last_num_recs = 0;
     if (prog.num_recs < last_num_recs)
         last_num_recs = 0;
 
-    for (size_t i = last_num_recs; i < prog.num_recs; i++)
-    {
-        RecordHolder &iter = prog.read_recs[i];
-        const char *bufstr = iter.rec.buf.c_str();
-        if ("error" == GDB_GetRecordAction(iter.rec))
-        {
-            if (NULL != strstr(bufstr, "optimized out"))
-            {
+    for (size_t i = last_num_recs; i < prog.num_recs; i++) {
+        RecordHolder& iter = prog.read_recs[i];
+        const char* bufstr = iter.rec.buf.c_str();
+        if ("error" == get_record_action(iter.rec)) {
+            if (NULL != strstr(bufstr, "optimized out")) {
                 // @GDB: match up results for optimized out variables
                 // 1. -data-evaluate-expression argv --> ^done,value="<optimized out>"
-                // 2. -data-evaluate-expression argv[0] --> ^error,msg="value has been optimized out"
+                // 2. -data-evaluate-expression argv[0] --> ^error,msg="value has been optimized
+                // out"
 
-                const Record OPTIMIZED_OUT_FIX = {
-                    iter.rec.id,
-                    {
-                        { Atom_Array, {0, 0}, {1,1} }, // root atom
-                        { Atom_String, /*value*/{6, 5}, /*<optimized out>*/{13, 15} }
-                    },
-                    "^done,value=\"<optimized out>\""
-                };
+                const Record OPTIMIZED_OUT_FIX = { iter.rec.id,
+                    { { Atom_Array, { 0, 0 }, { 1, 1 } }, // root atom
+                        { Atom_String, /*value*/ { 6, 5 }, /*<optimized out>*/ { 13, 15 } } },
+                    "^done,value=\"<optimized out>\"" };
 
                 prog.num_recs++;
-                RecordHolder &last = prog.read_recs[ prog.num_recs - 1 ];
+                RecordHolder& last = prog.read_recs[prog.num_recs - 1];
                 last.rec = OPTIMIZED_OUT_FIX;
                 last.parsed = false;
-            }
-            else 
-            {
-                // don't print error on watch variables not in scope (no symbol "xyz" in current context)
-                // don't print error on hovering mouse over a type name
-                if (NULL == strstr(bufstr, "in current context.") ||
-                    gdb.echo_next_no_symbol_in_context)
-                    //NULL == strstr(bufstr, "Attempt to use a type name as an expression"))
+            } else {
+                // don't print error on watch variables not in scope (no symbol "xyz" in current
+                // context) don't print error on hovering mouse over a type name
+                if (NULL == strstr(bufstr, "in current context.")
+                    || g_gdb.echo_next_no_symbol_in_context)
+                // NULL == strstr(bufstr, "Attempt to use a type name as an expression"))
                 {
                     // convert error record to GDB console output record
-                    String errmsg = GDB_ExtractValue("msg", iter.rec);
+                    String errmsg = extract_value("msg", iter.rec);
 
                     // replace bad description of when an executable doesn't reference a sourcefile
-                    static const char *needle = "No source file named";
+                    static const char* needle = "No source file named";
                     size_t idx = errmsg.find(needle);
                     if (idx < errmsg.size())
                         errmsg.replace(idx, strlen(needle), "executable doesn't reference file");
@@ -1314,5 +1117,7 @@ void GDB_GrabBlockData()
     }
 
     last_num_recs = prog.num_recs;
-    pthread_mutex_unlock(&gdb.modify_block);
+    pthread_mutex_unlock(&g_gdb.modify_block);
 }
+
+} // namespace gdb

@@ -229,12 +229,10 @@ void ResetProgramState()
     prog.thread_idx = BAD_INDEX;
 }
 
-enum LineDisplay {
-    LineDisplay_Source,
-    LineDisplay_Disassembly,
-    LineDisplay_Source_And_Disassembly,
-    // LineDisplay_Disassembly_With_Opcodes,
-    // LineDisplay_Source_And_Disassembly_With_Opcodes,
+enum class LineDisplay {
+    Source,
+    Disassembly,
+    Source_And_Disassembly,
 };
 
 enum WindowTheme {
@@ -261,7 +259,7 @@ struct Session {
 
 struct GUI {
     GLFWwindow* window;
-    LineDisplay line_display = LineDisplay_Source;
+    LineDisplay line_display = LineDisplay::Source;
     std::vector<DisassemblyLine> line_disasm;
     std::vector<DisassemblySourceLine> line_disasm_source;
     bool show_machine_interpreter_commands;
@@ -306,7 +304,7 @@ struct GUI {
 };
 
 Program prog;
-GDB gdb;
+GDB g_gdb;
 GUI gui;
 
 static uint64_t ParseHex(const String& str)
@@ -566,7 +564,7 @@ VarObj CreateVarObj(String name, String value = "")
         ctx.buf = value.c_str();
         ctx.bufsize = value.size();
 
-        RecordAtom root = GDB_RecurseEvaluation(ctx).atom;
+        RecordAtom root = gdb::recurse_evaluation(ctx).atom;
 
         if (!ctx.error) {
             // put the root in place since it doesn't get popped to the
@@ -619,7 +617,7 @@ VarObj CreateVarObj(String name, String value = "")
                   };
 
             if (result.expr.atoms.size() > 1)
-                IterateAtoms(result.expr, result.expr.atoms[0], RemoveStringBackslashes, NULL);
+                gdb::iterate_atoms(result.expr, result.expr.atoms[0], RemoveStringBackslashes, NULL);
         }
     }
 
@@ -723,13 +721,13 @@ bool ExecuteCommand(const char* cmd, bool remove_after = true)
 
     if (focused_all) {
         mi = StringPrintf("%s --all", cmd);
-        result = GDB_SendBlocking(mi.c_str(), remove_after);
+        result = gdb::send_blocking(mi.c_str(), remove_after);
     } else {
         result = true;
         for (size_t i = 0; i < prog.threads.size(); i++) {
             if (prog.threads[i].focused) {
                 mi += StringPrintf("%s --thread %d", cmd, prog.threads[i].id);
-                result &= GDB_SendBlocking(mi.c_str(), remove_after);
+                result &= gdb::send_blocking(mi.c_str(), remove_after);
             }
         }
     }
@@ -760,12 +758,12 @@ void QueryWatchlist()
         VarObj incoming = {};
         incoming.name = iter.name;
         incoming.value = "???";
-        if (GDB_SendBlocking(cmd.c_str(), rec)) {
+        if (gdb::send_blocking(cmd.c_str(), rec)) {
             static uint32_t counter = 0;
             String exprname = StringPrintf("expression##%u", counter);
             counter++;
 
-            incoming = CreateVarObj(exprname, GDB_ExtractValue("value", rec));
+            incoming = CreateVarObj(exprname, gdb::extract_value("value", rec));
         }
 
         CheckIfChanged(incoming, iter);
@@ -790,7 +788,7 @@ void GetFunctionDisassembly(const Frame& frame)
 
     const File& file = prog.files[frame.file_idx];
     if (file.lines.size() == 0) {
-        if (!gdb.has_data_disassemble_option_a) {
+        if (!g_gdb.has_data_disassemble_option_a) {
             return; // operation not supported, bail early
         } else {
             // some frames don't have an associated file ex: _start function after returning from
@@ -805,11 +803,11 @@ void GetFunctionDisassembly(const Frame& frame)
             frame.line_idx + 1);
     }
 
-    GDB_SendBlocking(tmpbuf, rec);
+    gdb::send_blocking(tmpbuf, rec);
 
-    const RecordAtom* instrs = GDB_ExtractAtom("asm_insns", rec);
+    const RecordAtom* instrs = gdb::extract_atom("asm_insns", rec);
     if (file.lines.size() != 0) {
-        for (const RecordAtom& src_and_asm_line : GDB_IterChild(rec, instrs)) {
+        for (const RecordAtom& src_and_asm_line : gdb::iter_child(rec, instrs)) {
             // array of src_and_asm_line
             //     line="32"
             //     file="debug.c"
@@ -817,11 +815,11 @@ void GetFunctionDisassembly(const Frame& frame)
             //     line_asm_insn
             bool is_first_inst = true;
             DisassemblySourceLine line_src = {};
-            const RecordAtom* atom = GDB_ExtractAtom("line_asm_insn", src_and_asm_line, rec);
-            line_src.line_idx = (size_t)GDB_ExtractInt("line", src_and_asm_line, rec) - 1;
+            const RecordAtom* atom = gdb::extract_atom("line_asm_insn", src_and_asm_line, rec);
+            line_src.line_idx = (size_t)gdb::extract_int("line", src_and_asm_line, rec) - 1;
             line_src.num_instructions = 0;
 
-            for (const RecordAtom& line_asm_inst : GDB_IterChild(rec, atom)) {
+            for (const RecordAtom& line_asm_inst : gdb::iter_child(rec, atom)) {
                 // array of unnamed struct
                 //     address="0x0000555555555248"
                 //     func-name="main"
@@ -830,11 +828,11 @@ void GetFunctionDisassembly(const Frame& frame)
                 //     line_asm_inst="je     0x55555555524f <main+183>"
 
                 DisassemblyLine add = {};
-                String string_addr = GDB_ExtractValue("address", line_asm_inst, rec);
-                String func = GDB_ExtractValue("func-name", line_asm_inst, rec);
-                String offset_from_func = GDB_ExtractValue("offset", line_asm_inst, rec);
-                String inst = GDB_ExtractValue("inst", line_asm_inst, rec);
-                String opcodes = GDB_ExtractValue("opcodes", line_asm_inst, rec);
+                String string_addr = gdb::extract_value("address", line_asm_inst, rec);
+                String func = gdb::extract_value("func-name", line_asm_inst, rec);
+                String offset_from_func = gdb::extract_value("offset", line_asm_inst, rec);
+                String inst = gdb::extract_value("inst", line_asm_inst, rec);
+                String opcodes = gdb::extract_value("opcodes", line_asm_inst, rec);
 
                 tsnprintf(tmpbuf, "%s <%s+%s> %s", string_addr.c_str(), func.c_str(),
                     offset_from_func.c_str(), inst.c_str());
@@ -854,7 +852,7 @@ void GetFunctionDisassembly(const Frame& frame)
         }
     } else {
         // getting function disassembly for a fileless frame
-        for (const RecordAtom& line_asm_inst : GDB_IterChild(rec, instrs)) {
+        for (const RecordAtom& line_asm_inst : gdb::iter_child(rec, instrs)) {
             // array of unnamed struct
             //     address="0x0000555555555248"
             //     func-name="main"
@@ -863,11 +861,11 @@ void GetFunctionDisassembly(const Frame& frame)
             //     inst="je     0x55555555524f <main+183>"
 
             DisassemblyLine add = {};
-            String string_addr = GDB_ExtractValue("address", line_asm_inst, rec);
-            String func = GDB_ExtractValue("func-name", line_asm_inst, rec);
-            String offset_from_func = GDB_ExtractValue("offset", line_asm_inst, rec);
-            String inst = GDB_ExtractValue("inst", line_asm_inst, rec);
-            String opcodes = GDB_ExtractValue("opcodes", line_asm_inst, rec);
+            String string_addr = gdb::extract_value("address", line_asm_inst, rec);
+            String func = gdb::extract_value("func-name", line_asm_inst, rec);
+            String offset_from_func = gdb::extract_value("offset", line_asm_inst, rec);
+            String inst = gdb::extract_value("inst", line_asm_inst, rec);
+            String opcodes = gdb::extract_value("opcodes", line_asm_inst, rec);
 
             tsnprintf(tmpbuf, "%s <%s+%s> %s", string_addr.c_str(), func.c_str(),
                 offset_from_func.c_str(), inst.c_str());
@@ -999,20 +997,20 @@ void RecurseExpressionTreeNodes(const VarObj& var, size_t atom_idx, size_t paren
 Breakpoint ExtractBreakpoint(const Record& rec)
 {
     Breakpoint result = {};
-    String filename = GDB_ExtractValue("bkpt.fullname", rec);
+    String filename = gdb::extract_value("bkpt.fullname", rec);
     result.file_idx = FindOrCreateFile(filename);
-    result.number = GDB_ExtractInt("bkpt.number", rec);
-    result.addr = ParseHex(GDB_ExtractValue("bkpt.addr", rec));
-    result.enabled = ("y" == GDB_ExtractValue("bkpt.enabled", rec));
+    result.number = gdb::extract_int("bkpt.number", rec);
+    result.addr = ParseHex(gdb::extract_value("bkpt.addr", rec));
+    result.enabled = ("y" == gdb::extract_value("bkpt.enabled", rec));
 
-    int line = GDB_ExtractInt("bkpt.line", rec);
+    int line = gdb::extract_int("bkpt.line", rec);
     result.line_idx = (line > 0) ? (size_t)(line - 1) : BAD_INDEX;
 
-    String what = GDB_ExtractValue("bkpt.what", rec);
+    String what = gdb::extract_value("bkpt.what", rec);
     if (what != "") {
         result.cond = "watch " + what;
     } else {
-        result.cond = GDB_ExtractValue("bkpt.cond", rec);
+        result.cond = gdb::extract_value("bkpt.cond", rec);
     }
 
     return result;
@@ -1027,8 +1025,8 @@ void QueryFrame(bool force_clear_locals)
     QueryWatchlist();
 
     tsnprintf(tmpbuf, "-stack-list-frames --thread %d", GetActiveThreadID());
-    GDB_SendBlocking(tmpbuf, rec);
-    const RecordAtom* callstack = GDB_ExtractAtom("stack", rec);
+    gdb::send_blocking(tmpbuf, rec);
+    const RecordAtom* callstack = gdb::extract_atom("stack", rec);
     if (callstack) {
         String arch = "";
         static bool set_default_registers = true;
@@ -1036,15 +1034,15 @@ void QueryFrame(bool force_clear_locals)
         static String last_stack_sig;
         String stack_sig;
 
-        for (const RecordAtom& level : GDB_IterChild(rec, callstack)) {
+        for (const RecordAtom& level : gdb::iter_child(rec, callstack)) {
             Frame add = {};
-            add.line_idx = (size_t)GDB_ExtractInt("line", level, rec) - 1;
-            add.addr = ParseHex(GDB_ExtractValue("addr", level, rec));
-            add.func = GDB_ExtractValue("func", level, rec);
-            arch = GDB_ExtractValue("arch", level, rec);
+            add.line_idx = (size_t)gdb::extract_int("line", level, rec) - 1;
+            add.addr = ParseHex(gdb::extract_value("addr", level, rec));
+            add.func = gdb::extract_value("func", level, rec);
+            arch = gdb::extract_value("arch", level, rec);
             stack_sig += add.func;
 
-            String fullpath = GDB_ExtractValue("fullname", level, rec);
+            String fullpath = gdb::extract_value("fullname", level, rec);
             add.file_idx = FindOrCreateFile(fullpath);
 
             prog.frames.emplace_back(add);
@@ -1065,7 +1063,7 @@ void QueryFrame(bool force_clear_locals)
                 struct stat exe_st = {};
                 if (std::filesystem::exists(file.filename)
                     && (0 > stat(file.filename.c_str(), &source_st)
-                        || 0 > stat(gdb.debug_filename.c_str(), &exe_st))) {
+                        || 0 > stat(g_gdb.debug_filename.c_str(), &exe_st))) {
                     PrintErrorf("stat %s\n", GetErrorString(errno));
                 } else {
                     time_t src = source_st.st_mtime;
@@ -1080,7 +1078,7 @@ void QueryFrame(bool force_clear_locals)
         if (prog.stack_sig != stack_sig || force_clear_locals) {
             prog.stack_sig = stack_sig;
             prog.local_vars.clear();
-            if (gui.line_display != LineDisplay_Source && prog.frame_idx < prog.frames.size())
+            if (gui.line_display != LineDisplay::Source && prog.frame_idx < prog.frames.size())
                 GetFunctionDisassembly(prog.frames[prog.frame_idx]);
         }
 
@@ -1110,8 +1108,8 @@ void QueryFrame(bool force_clear_locals)
 
                 String str = StringPrintf(
                     "-var-create " GLOBAL_NAME_PREFIX "%s @ $%s", registers[i], registers[i]);
-                if (GDB_SendBlocking(str.c_str(), rec)) {
-                    VarObj add = CreateVarObj(registers[i], GDB_ExtractValue("value", rec));
+                if (gdb::send_blocking(str.c_str(), rec)) {
+                    VarObj add = CreateVarObj(registers[i], gdb::extract_value("value", rec));
                     prog.global_vars.emplace_back(add);
                 }
             }
@@ -1124,17 +1122,17 @@ void QueryFrame(bool force_clear_locals)
 
     tsnprintf(tmpbuf, "-stack-list-variables --frame %zu --thread %d --all-values", prog.frame_idx,
         GetActiveThreadID());
-    GDB_SendBlocking(tmpbuf, rec);
+    gdb::send_blocking(tmpbuf, rec);
     for (VarObj& local : prog.local_vars)
         local.changed = false;
 
-    const RecordAtom* vars = GDB_ExtractAtom("variables", rec);
+    const RecordAtom* vars = gdb::extract_atom("variables", rec);
     size_t start_locals_length = prog.local_vars.size();
     std::vector<bool> var_found(start_locals_length);
 
-    for (const RecordAtom& child : GDB_IterChild(rec, vars)) {
+    for (const RecordAtom& child : gdb::iter_child(rec, vars)) {
         VarObj incoming = CreateVarObj(
-            GDB_ExtractValue("name", child, rec), GDB_ExtractValue("value", child, rec));
+            gdb::extract_value("name", child, rec), gdb::extract_value("value", child, rec));
 
         bool found = false;
         for (size_t i = start_locals_length - 1; i < start_locals_length; i--) {
@@ -1163,14 +1161,14 @@ void QueryFrame(bool force_clear_locals)
     }
 
     // update global values, just registers right now
-    GDB_SendBlocking("-var-update --all-values *", rec);
-    const RecordAtom* changelist = GDB_ExtractAtom("changelist", rec);
+    gdb::send_blocking("-var-update --all-values *", rec);
+    const RecordAtom* changelist = gdb::extract_atom("changelist", rec);
     for (VarObj& global : prog.global_vars)
         global.changed = false;
 
-    for (const RecordAtom& iter : GDB_IterChild(rec, changelist)) {
+    for (const RecordAtom& iter : gdb::iter_child(rec, changelist)) {
         VarObj incoming = CreateVarObj(
-            GDB_ExtractValue("name", iter, rec), GDB_ExtractValue("value", iter, rec));
+            gdb::extract_value("name", iter, rec), gdb::extract_value("value", iter, rec));
 
         const char* srcname = incoming.name.c_str();
         const char* namestart = strstr(srcname, GLOBAL_NAME_PREFIX);
@@ -1229,10 +1227,10 @@ void Draw()
 
     // check for new blocks
     int recv_block_semvalue = 0;
-    sem_getvalue(gdb.recv_block, &recv_block_semvalue);
+    sem_getvalue(g_gdb.recv_block, &recv_block_semvalue);
     if (recv_block_semvalue > 0) {
-        GDB_GrabBlockData();
-        sem_wait(gdb.recv_block);
+        gdb::grab_block_data();
+        sem_wait(g_gdb.recv_block);
     }
 
     // process and clear all records found
@@ -1253,7 +1251,7 @@ void Draw()
             char prefix = '\0';
             if (parse_rec.buf.size() > 0) {
                 prefix = parse_rec.buf[0];
-                record_action = GDB_GetRecordAction(parse_rec);
+                record_action = gdb::get_record_action(parse_rec);
             }
 
             if (prefix == PREFIX_ASYNC0) {
@@ -1270,7 +1268,7 @@ void Draw()
                     }
                 } else if (record_action == "breakpoint-deleted") {
                     // breakpoints deleted from console ex: "d 1"
-                    size_t id = (size_t)GDB_ExtractInt("id", parse_rec);
+                    size_t id = (size_t)gdb::extract_int("id", parse_rec);
                     auto& bpts = prog.breakpoints;
                     for (size_t b = 0; b < bpts.size(); b++) {
                         if (bpts[b].number == id) {
@@ -1279,9 +1277,9 @@ void Draw()
                         }
                     }
                 } else if (record_action == "thread-group-started") {
-                    prog.inferior_process = (pid_t)GDB_ExtractInt("pid", parse_rec);
+                    prog.inferior_process = (pid_t)gdb::extract_int("pid", parse_rec);
                 } else if (record_action == "thread-group-exited") {
-                    String group_id = GDB_ExtractValue("id", parse_rec);
+                    String group_id = gdb::extract_value("id", parse_rec);
                     for (size_t end = prog.threads.size(); end > 0; end--) {
                         size_t t = end - 1;
                         if (prog.threads[t].group_id == group_id) {
@@ -1291,14 +1289,14 @@ void Draw()
                         }
                     }
                 } else if (record_action == "thread-selected") {
-                    int tid = GDB_ExtractInt("id", parse_rec);
+                    int tid = gdb::extract_int("id", parse_rec);
                     for (size_t t = 0; t < prog.threads.size(); t++)
                         if (prog.threads[t].id == tid)
                             prog.thread_idx = t;
 
                     // user jumped to a new thread/frame from the console window
                     if (!prog.running) {
-                        size_t index = (size_t)GDB_ExtractInt("frame.level", parse_rec);
+                        size_t index = (size_t)gdb::extract_int("frame.level", parse_rec);
                         if (index < prog.frames.size()) {
                             prog.frame_idx = index;
                             QueryFrame(true);
@@ -1306,15 +1304,15 @@ void Draw()
                     }
                 } else if (record_action == "thread-created") {
                     Thread t = {};
-                    t.id = GDB_ExtractInt("id", parse_rec);
-                    t.group_id = GDB_ExtractValue("group-id", parse_rec);
+                    t.id = gdb::extract_int("id", parse_rec);
+                    t.group_id = gdb::extract_value("group-id", parse_rec);
                     t.focused = true;
 
                     if (t.id != 0 && t.group_id != "")
                         prog.threads.push_back(t);
                 } else if (record_action == "thread-exited") {
-                    int id = GDB_ExtractInt("id", parse_rec);
-                    String group_id = GDB_ExtractValue("group-id", parse_rec);
+                    int id = gdb::extract_int("id", parse_rec);
+                    String group_id = gdb::extract_value("group-id", parse_rec);
                     for (size_t t = 0; t < prog.threads.size(); t++) {
                         if (prog.threads[t].id == id && prog.threads[t].group_id == group_id) {
                             prog.threads.erase(
@@ -1325,7 +1323,7 @@ void Draw()
                 }
             } else if (record_action == "running") {
                 prog.running = true;
-                String thread = GDB_ExtractValue("thread-id", parse_rec);
+                String thread = gdb::extract_value("thread-id", parse_rec);
                 if (thread == "all") {
                     for (Thread& t : prog.threads)
                         t.running = true;
@@ -1351,19 +1349,19 @@ void Draw()
                 }
 
                 prog.running = false;
-                String reason = GDB_ExtractValue("reason", parse_rec);
-                int tid = GDB_ExtractInt("thread-id", parse_rec);
+                String reason = gdb::extract_value("reason", parse_rec);
+                int tid = gdb::extract_int("thread-id", parse_rec);
 
                 // wonky: sometimes it's stopped-threads="all", and sometimes it's
                 // stopped-threads=["all"]
                 bool stopped_all = false;
-                const RecordAtom* stopped_threads = GDB_ExtractAtom("stopped-threads", parse_rec);
+                const RecordAtom* stopped_threads = gdb::extract_atom("stopped-threads", parse_rec);
                 if (stopped_threads != NULL) {
                     if (stopped_threads->type == Atom_String) {
-                        stopped_all = ("all" == GetAtomString(stopped_threads->value, parse_rec));
+                        stopped_all = ("all" == gdb::get_atom_string(stopped_threads->value, parse_rec));
                     } else if (stopped_threads->type == Atom_Array) {
-                        for (const RecordAtom& stopped : GDB_IterChild(rec, stopped_threads))
-                            stopped_all |= ("all" == GetAtomString(stopped.value, rec));
+                        for (const RecordAtom& stopped : gdb::iter_child(rec, stopped_threads))
+                            stopped_all |= ("all" == gdb::get_atom_string(stopped.value, rec));
                     }
                 }
 
@@ -1452,11 +1450,11 @@ void Draw()
                     tsnprintf(debug_filename, "%s", gui.drag_drop_exe_path.c_str());
                     gui.drag_drop_exe_path = "";
                 } else {
-                    tsnprintf(debug_filename, "%s", gdb.debug_filename.c_str());
+                    tsnprintf(debug_filename, "%s", g_gdb.debug_filename.c_str());
                 }
-                tsnprintf(debug_args, "%s", gdb.debug_args.c_str());
-                tsnprintf(gdb_filename, "%s", gdb.filename.c_str());
-                tsnprintf(gdb_args, "%s", gdb.args.c_str());
+                tsnprintf(debug_args, "%s", g_gdb.debug_args.c_str());
+                tsnprintf(gdb_filename, "%s", g_gdb.filename.c_str());
+                tsnprintf(gdb_args, "%s", g_gdb.args.c_str());
             }
 
             ImGui::InputText("GDB filename", gdb_filename, sizeof(gdb_filename));
@@ -1500,22 +1498,22 @@ void Draw()
             bool started = false;
             ImGuiDisabled(prog.started, started = ImGui::Button("Start##Debug Program Menu"));
             if (started) {
-                if (gdb.filename != gdb_filename) {
-                    if (gdb.spawned_pid != 0) {
-                        Printf("ending %s...", gdb.filename.c_str());
-                        gdb.filename = "";
-                        EndProcess(gdb.spawned_pid);
+                if (g_gdb.filename != gdb_filename) {
+                    if (g_gdb.spawned_pid != 0) {
+                        Printf("ending %s...", g_gdb.filename.c_str());
+                        g_gdb.filename = "";
+                        EndProcess(g_gdb.spawned_pid);
                         ResetProgramState();
-                        gdb.spawned_pid = 0;
+                        g_gdb.spawned_pid = 0;
                     }
 
-                    GDB_StartProcess(gdb_filename, gdb_args);
+                    gdb::start_process(gdb_filename, gdb_args);
                 }
 
-                if (gdb.spawned_pid != 0 && GDB_SetInferiorExe(debug_filename)
-                    && GDB_SetInferiorArgs(debug_args)) {
-                    if (gdb.has_exec_run_start)
-                        GDB_SendBlocking("-exec-run --start");
+                if (g_gdb.spawned_pid != 0 && gdb::set_inferior_exe(debug_filename)
+                    && gdb::set_inferior_args(debug_args)) {
+                    if (g_gdb.has_exec_run_start)
+                        gdb::send_blocking("-exec-run --start");
 
                     char* exe_abspath = realpath(debug_filename, NULL);
                     if (exe_abspath) {
@@ -1581,9 +1579,9 @@ void Draw()
 
                         tsnprintf(tmpbuf, "-var-create " GLOBAL_NAME_PREFIX "%s @ $%s",
                             reg.text.c_str(), reg.text.c_str());
-                        GDB_SendBlocking(tmpbuf, rec);
+                        gdb::send_blocking(tmpbuf, rec);
 
-                        VarObj add = CreateVarObj(reg.text, GDB_ExtractValue("value", rec));
+                        VarObj add = CreateVarObj(reg.text, gdb::extract_value("value", rec));
                         prog.global_vars.emplace_back(add);
                     } else {
                         // delete register varobj
@@ -1591,7 +1589,7 @@ void Draw()
                             if (prog.global_vars[i].name == reg.text) {
                                 tsnprintf(tmpbuf, "-var-delete " GLOBAL_NAME_PREFIX "%s",
                                     reg.text.c_str());
-                                if (GDB_SendBlocking(tmpbuf)) {
+                                if (gdb::send_blocking(tmpbuf)) {
                                     prog.global_vars.erase(prog.global_vars.begin() + i,
                                         prog.global_vars.begin() + i + 1);
                                 }
@@ -1775,7 +1773,7 @@ void Draw()
 
             // @Optimization: only draw the visible lines then SetCursorPosY to
             // be lineheight * height per line to set the total scroll
-            if (gui.line_display == LineDisplay_Source) {
+            if (gui.line_display == LineDisplay::Source) {
                 bool in_active_frame_file = prog.frame_idx < prog.frames.size()
                     && prog.frames[prog.frame_idx].file_idx == prog.file_idx;
 
@@ -1876,12 +1874,12 @@ void Draw()
                                     if (!iter.enabled) {
                                         // change breakpoint state from disabled to enabled
                                         tsnprintf(tmpbuf, "-break-enable %zu", iter.number);
-                                        if (GDB_SendBlocking(tmpbuf))
+                                        if (gdb::send_blocking(tmpbuf))
                                             iter.enabled = true;
                                     } else {
                                         // remove breakpoint
                                         tsnprintf(tmpbuf, "-break-delete %zu", iter.number);
-                                        if (GDB_SendBlocking(tmpbuf)) {
+                                        if (gdb::send_blocking(tmpbuf)) {
                                             prog.breakpoints.erase(prog.breakpoints.begin() + b,
                                                 prog.breakpoints.begin() + b + 1);
                                         }
@@ -1894,7 +1892,7 @@ void Draw()
                             // create breakpoint
                             tsnprintf(tmpbuf, "-break-insert \"%s:%d\"", file.filename.c_str(),
                                 (int)(line_idx + 1));
-                            if (GDB_SendBlocking(tmpbuf, rec)) {
+                            if (gdb::send_blocking(tmpbuf, rec)) {
                                 Breakpoint bkpt = ExtractBreakpoint(rec);
                                 prog.breakpoints.push_back(bkpt);
                                 const char* filename = prog.files[bkpt.file_idx].filename.c_str();
@@ -2017,8 +2015,8 @@ void Draw()
                                                     "--thread %d \"%s\"",
                                                     prog.frame_idx, GetActiveThreadID(),
                                                     word.c_str());
-                                                if (GDB_SendBlocking(tmpbuf, rec)) {
-                                                    hover_value = GDB_ExtractValue("value", rec);
+                                                if (gdb::send_blocking(tmpbuf, rec)) {
+                                                    hover_value = gdb::extract_value("value", rec);
                                                 }
                                             }
                                         } else {
@@ -2068,8 +2066,8 @@ void Draw()
                         }
                     }
                 }
-            } else if ((gui.line_display == LineDisplay_Disassembly
-                           || gui.line_display == LineDisplay_Source_And_Disassembly)
+            } else if ((gui.line_display == LineDisplay::Disassembly
+                           || gui.line_display == LineDisplay::Source_And_Disassembly)
                 && prog.frame_idx < prog.frames.size()
                 && prog.frames[prog.frame_idx].file_idx == prog.file_idx) {
                 const Frame& frame = prog.frames[prog.frame_idx];
@@ -2093,7 +2091,7 @@ void Draw()
                 for (size_t i = start_idx; i < end_idx; i++) {
                     const DisassemblyLine& line = gui.line_disasm[i];
 
-                    if (gui.line_display == LineDisplay_Source_And_Disassembly) {
+                    if (gui.line_display == LineDisplay::Source_And_Disassembly) {
                         // display source line then all of its instructions below
                         if (inst_left == 0) {
                             while (src_idx < gui.line_disasm_source.size()) {
@@ -2148,7 +2146,7 @@ void Draw()
                                 if (bkpt.addr == line.addr && bkpt.file_idx == frame.file_idx) {
                                     // remove breakpoint
                                     tsnprintf(tmpbuf, "-break-delete %zu", bkpt.number);
-                                    if (GDB_SendBlocking(tmpbuf)) {
+                                    if (gdb::send_blocking(tmpbuf)) {
                                         prog.breakpoints.erase(prog.breakpoints.begin() + b,
                                             prog.breakpoints.begin() + b + 1);
                                     }
@@ -2158,7 +2156,7 @@ void Draw()
                         } else {
                             // insert breakpoint
                             tsnprintf(tmpbuf, "-break-insert *0x%" PRIx64, line.addr);
-                            if (GDB_SendBlocking(tmpbuf, rec))
+                            if (gdb::send_blocking(tmpbuf, rec))
                                 prog.breakpoints.push_back(ExtractBreakpoint(rec));
                         }
                     }
@@ -2255,7 +2253,7 @@ void Draw()
             if (prog.started)
                 ExecuteCommand("-exec-continue");
             else
-                GDB_SendBlocking("-exec-run");
+                gdb::send_blocking("-exec-run");
         }
 
         // send SIGINT
@@ -2264,7 +2262,7 @@ void Draw()
             if (prog.inferior_process != 0)
                 kill(prog.inferior_process, SIGINT);
 
-            GDB_SendBlocking("-exec-interrupt --all");
+            gdb::send_blocking("-exec-interrupt --all");
         }
 
         // step line
@@ -2430,11 +2428,11 @@ void Draw()
 
             String exec_mi;
             if (keyword == "file") {
-                GDB_SetInferiorExe(rest);
+                gdb::set_inferior_exe(rest);
             } else if (keyword == "set") {
                 String set_target = PopFrontWord(rest);
                 if (set_target == "args")
-                    GDB_SetInferiorArgs(rest);
+                    gdb::set_inferior_args(rest);
             } else if (keyword == "step" || keyword == "s") {
                 exec_mi = "-exec-step";
             } else if (keyword == "stepi") {
@@ -2455,11 +2453,11 @@ void Draw()
                 ExecuteCommand(exec_mi.c_str());
             } else if (send_command.size() > 0 && send_command[0] == '-') {
                 // send the machine interpreter command as is
-                GDB_SendBlocking(send_command.c_str());
+                gdb::send_blocking(send_command.c_str());
             } else {
                 // wrap command in machine interpreter statement
                 String s = StringPrintf("-interpreter-exec console \"%s\"", send_command.c_str());
-                GDB_SendBlocking(s.c_str());
+                gdb::send_blocking(s.c_str());
             }
 
             if (!use_last_command) {
@@ -2496,13 +2494,13 @@ void Draw()
         {
             if (phrases.size() == 0) {
                 String cmd = StringPrintf("-complete \"%s\"", input_command.c_str());
-                if (GDB_SendBlocking(cmd.c_str(), rec)) {
+                if (gdb::send_blocking(cmd.c_str(), rec)) {
                     phrase_idx = 0;
                     phrases.clear();
                     query_phrase = input_command;
-                    const RecordAtom* matches = GDB_ExtractAtom("matches", rec);
-                    for (const RecordAtom& match : GDB_IterChild(rec, matches)) {
-                        phrases.push_back(GetAtomString(match.value, rec));
+                    const RecordAtom* matches = gdb::extract_atom("matches", rec);
+                    for (const RecordAtom& match : gdb::iter_child(rec, matches)) {
+                        phrases.push_back(gdb::get_atom_string(match.value, rec));
                     }
                 }
             } else {
@@ -2526,7 +2524,7 @@ void Draw()
                 // read in inferior stdout
                 while (true) {
                     pollfd p = {};
-                    p.fd = gdb.fd_ptty_master;
+                    p.fd = g_gdb.fd_ptty_master;
                     p.events = POLLIN;
 
                     int rc = poll(&p, 1, 0);
@@ -2542,7 +2540,7 @@ void Draw()
                             break;
 
                         char buf[1024] = {};
-                        int bytes_read = read(gdb.fd_ptty_master, buf, sizeof(buf));
+                        int bytes_read = read(g_gdb.fd_ptty_master, buf, sizeof(buf));
                         if (bytes_read < 0) {
                             PrintErrorf("read %s\n", GetErrorString(errno));
                             break;
@@ -2824,19 +2822,19 @@ void Draw()
 
             // enable all, disable all, delete all
             ImGui::TableSetColumnIndex(0);
-            if (ImGui::Button("X##BreakpointDeleteAll") && GDB_SendBlocking("-break-delete --all"))
+            if (ImGui::Button("X##BreakpointDeleteAll") && gdb::send_blocking("-break-delete --all"))
                 prog.breakpoints.clear();
 
             ImGui::SameLine();
             if (ImGui::Checkbox("##BreakpointEnableAll", &tmp)
-                && GDB_SendBlocking("-break-enable --all"))
+                && gdb::send_blocking("-break-enable --all"))
                 for (Breakpoint& b : prog.breakpoints)
                     b.enabled = true;
 
             tmp = false;
             ImGui::SameLine();
             if (ImGui::Checkbox("##BreakpointDisableAll", &tmp)
-                && GDB_SendBlocking("-break-disable --all"))
+                && gdb::send_blocking("-break-disable --all"))
                 for (Breakpoint& b : prog.breakpoints)
                     b.enabled = false;
 
@@ -2863,7 +2861,7 @@ void Draw()
                 tsnprintf(tmpbuf, "X##BreakpointDelete%d", (int)i);
                 if (ImGui::Button(tmpbuf)) {
                     tsnprintf(tmpbuf, "-break-delete %zu", iter.number);
-                    if (GDB_SendBlocking(tmpbuf)) {
+                    if (gdb::send_blocking(tmpbuf)) {
                         prog.breakpoints.erase(
                             prog.breakpoints.begin() + i, prog.breakpoints.begin() + i + 1);
                         continue;
@@ -2879,7 +2877,7 @@ void Draw()
                     else
                         tsnprintf(tmpbuf, "-break-enable %zu", iter.number);
 
-                    if (GDB_SendBlocking(tmpbuf))
+                    if (gdb::send_blocking(tmpbuf))
                         iter.enabled = !iter.enabled;
                 }
 
@@ -2894,13 +2892,13 @@ void Draw()
                 if (i == edit_bkpt_idx) {
                     if (ImGui::InputText("##EditBreakpointCond", editcond, sizeof(editcond),
                             ImGuiInputTextFlags_EnterReturnsTrue, NULL, NULL)) {
-                        gdb.echo_next_no_symbol_in_context = true;
+                        g_gdb.echo_next_no_symbol_in_context = true;
                         tsnprintf(tmpbuf, "-break-condition %d %s", (int)iter.number, editcond);
-                        if (GDB_SendBlocking(tmpbuf, rec)) {
+                        if (gdb::send_blocking(tmpbuf, rec)) {
                             iter.cond = editcond;
                         } else {
                             tsnprintf(tmpbuf, "-break-condition %d", (int)iter.number);
-                            GDB_SendBlocking(tmpbuf, rec);
+                            gdb::send_blocking(tmpbuf, rec);
                         }
 
                         Zeroize(editcond);
@@ -2976,11 +2974,11 @@ void Draw()
 
             ImGui::TableSetColumnIndex(1);
             if (ImGui::Button("|>##ResumeAll") && prog.threads.size() > 0)
-                GDB_SendBlocking("-exec-continue --all");
+                gdb::send_blocking("-exec-continue --all");
 
             ImGui::TableSetColumnIndex(2);
             if (ImGui::Button("||##PauseAll"))
-                GDB_SendBlocking("-exec-interrupt --all");
+                gdb::send_blocking("-exec-interrupt --all");
 
             ImGui::TableSetColumnIndex(3);
             ImGui::TableHeader("Name");
@@ -3007,7 +3005,7 @@ void Draw()
                 ImGuiDisabled(thread.running, clicked_run = ImGui::Button(tmpbuf));
                 if (clicked_run) {
                     tsnprintf(tmpbuf, "-exec-continue --thread %d", thread.id);
-                    GDB_SendBlocking(tmpbuf);
+                    gdb::send_blocking(tmpbuf);
                 }
 
                 bool clicked_pause = false;
@@ -3016,7 +3014,7 @@ void Draw()
                 ImGuiDisabled(!thread.running, clicked_pause = ImGui::Button(tmpbuf));
                 if (clicked_pause) {
                     tsnprintf(tmpbuf, "-exec-interrupt --thread %d", thread.id);
-                    GDB_SendBlocking(tmpbuf);
+                    gdb::send_blocking(tmpbuf);
                 }
 
                 ImGui::TableSetColumnIndex(3);
@@ -3162,22 +3160,17 @@ void Draw()
     }
 }
 
-bool VerifyFileExecutable(const char* filename)
+bool is_executable(const char* path)
 {
-    bool result = false;
-    struct stat sb = {};
+    struct stat stats = {};
 
-    if (0 != stat(filename, &sb)) {
-        PrintErrorf("stat filename \"%s\" %s\n", filename, GetErrorString(errno));
-    } else {
-        if (!S_ISREG(sb.st_mode) || (sb.st_mode & S_IXUSR) == 0) {
-            PrintErrorf("file not executable %s\n", filename);
-        } else {
-            result = true;
-        }
-    }
+    if (stat(path, &stats) == -1)
+        return false;
 
-    return result;
+    if (!S_ISREG(stats.st_mode) || (stats.st_mode & S_IXUSR) == 0)
+        return false;
+
+    return true;
 }
 
 static void glfw_error_callback(int error, const char* description)
@@ -3289,35 +3282,35 @@ int main(int argc, char** argv)
             glfwTerminate();
 
         // shutdown GDB
-        if (gdb.thread_read_interp) {
-            pthread_cancel(gdb.thread_read_interp);
-            pthread_join(gdb.thread_read_interp, NULL);
+        if (g_gdb.thread_read_interp) {
+            pthread_cancel(g_gdb.thread_read_interp);
+            pthread_join(g_gdb.thread_read_interp, NULL);
         }
 
-        if (gdb.recv_block)
-            sem_close(gdb.recv_block);
+        if (g_gdb.recv_block)
+            sem_close(g_gdb.recv_block);
 
-        if (gdb.fd_ptty_master)
-            close(gdb.fd_ptty_master);
+        if (g_gdb.fd_ptty_master)
+            close(g_gdb.fd_ptty_master);
 
-        if (gdb.fd_in_read)
-            close(gdb.fd_in_read);
+        if (g_gdb.fd_in_read)
+            close(g_gdb.fd_in_read);
 
-        if (gdb.fd_out_read)
-            close(gdb.fd_out_read);
+        if (g_gdb.fd_out_read)
+            close(g_gdb.fd_out_read);
 
-        if (gdb.fd_in_write)
-            close(gdb.fd_in_write);
+        if (g_gdb.fd_in_write)
+            close(g_gdb.fd_in_write);
 
-        if (gdb.fd_out_write)
-            close(gdb.fd_out_write);
+        if (g_gdb.fd_out_write)
+            close(g_gdb.fd_out_write);
 
-        if (gdb.spawned_pid)
-            EndProcess(gdb.spawned_pid);
+        if (g_gdb.spawned_pid)
+            EndProcess(g_gdb.spawned_pid);
 
         pthread_mutex_t zmutex = {};
-        if (memcmp(&zmutex, &gdb.modify_block, sizeof(pthread_mutex_t)) != 0)
-            pthread_mutex_destroy(&gdb.modify_block);
+        if (memcmp(&zmutex, &g_gdb.modify_block, sizeof(pthread_mutex_t)) != 0)
+            pthread_mutex_destroy(&g_gdb.modify_block);
     });
 
     {
@@ -3329,27 +3322,27 @@ int main(int argc, char** argv)
         if (rc < 0)
             ExitMessagef("from gdb pipe %s\n", GetErrorString(errno));
 
-        gdb.fd_in_read = pipes[0];
-        gdb.fd_in_write = pipes[1];
+        g_gdb.fd_in_read = pipes[0];
+        g_gdb.fd_in_write = pipes[1];
 
         rc = pipe(pipes);
         if (rc < 0)
             ExitMessagef("to gdb pipe %s\n", GetErrorString(errno));
 
-        gdb.fd_out_read = pipes[0];
-        gdb.fd_out_write = pipes[1];
+        g_gdb.fd_out_read = pipes[0];
+        g_gdb.fd_out_write = pipes[1];
 
-        rc = pthread_mutex_init(&gdb.modify_block, NULL);
+        rc = pthread_mutex_init(&g_gdb.modify_block, NULL);
         if (rc < 0)
             ExitMessagef("pthread_mutex_init %s\n", GetErrorString(errno));
 
-        gdb.recv_block = sem_open("/sem_recv_gdb_block", O_CREAT, S_IRWXU, 0);
-        if (gdb.recv_block == NULL) {
+        g_gdb.recv_block = sem_open("/sem_recv_gdb_block", O_CREAT, S_IRWXU, 0);
+        if (g_gdb.recv_block == NULL) {
             if (errno == ENOSYS) // function not implemented
             {
                 static sem_t unnamed_sem;
                 if (0 == sem_init(&unnamed_sem, 0, 0)) {
-                    gdb.recv_block = &unnamed_sem;
+                    g_gdb.recv_block = &unnamed_sem;
                 } else {
                     ExitMessagef("sem_init %s\n", GetErrorString(errno));
                 }
@@ -3359,7 +3352,7 @@ int main(int argc, char** argv)
         }
 
         extern void* GDB_ReadInterpreterBlocks(void*);
-        rc = pthread_create(&gdb.thread_read_interp, NULL, GDB_ReadInterpreterBlocks, (void*)NULL);
+        rc = pthread_create(&g_gdb.thread_read_interp, NULL, gdb::read_interpreter_blocks, (void*)NULL);
         if (rc < 0)
             ExitMessagef("pthread_create %s\n", GetErrorString(errno));
 
@@ -3368,8 +3361,8 @@ int main(int argc, char** argv)
         if (ptty_fd != -1) {
             if (0 == grantpt(ptty_fd)) {
                 if (0 == unlockpt(ptty_fd)) {
-                    gdb.fd_ptty_master = ptty_fd;
-                    Printf("pty slave: %s\n", ptsname(gdb.fd_ptty_master));
+                    g_gdb.fd_ptty_master = ptty_fd;
+                    Printf("pty slave: %s\n", ptsname(g_gdb.fd_ptty_master));
                 } else {
                     PrintErrorf("unlockpt %s\n", GetErrorString(errno));
                 }
@@ -3378,7 +3371,7 @@ int main(int argc, char** argv)
             }
 
             // cleanup fd if grantpt/unlockpt failed
-            if (gdb.fd_ptty_master == 0) {
+            if (g_gdb.fd_ptty_master == 0) {
                 close(ptty_fd);
                 ptty_fd = 0;
             }
@@ -3390,7 +3383,7 @@ int main(int argc, char** argv)
         if (InvokeShellCommand("which gdb", tmp)) {
             std::erase_if(tmp, [](char c) { return c == '\r' || c == '\n' || c == ' '; });
             if (std::filesystem::exists(tmp))
-                gdb.filename = tmp;
+                g_gdb.filename = tmp;
         }
 
         auto sig_handler = [](int) {
@@ -3409,18 +3402,18 @@ int main(int argc, char** argv)
         ExitMessagef("missing %s param\n", "");
     }
 
-    gdb.debug_filename = argv[1];
+    g_gdb.debug_filename = argv[1];
 
-    if (!gdb.filename.empty() && !GDB_StartProcess(gdb.filename, "")) {
-        gdb.filename = "";
+    if (!g_gdb.filename.empty() && !gdb::start_process(g_gdb.filename, "")) {
+        g_gdb.filename = "";
     }
 
-    if (gdb.spawned_pid != 0 && !gdb.debug_filename.empty()) {
-        if (GDB_SetInferiorExe(gdb.debug_filename)) {
-            if (gdb.has_exec_run_start)
-                GDB_SendBlocking("-exec-run --start");
+    if (g_gdb.spawned_pid != 0 && !g_gdb.debug_filename.empty()) {
+        if (gdb::set_inferior_exe(g_gdb.debug_filename)) {
+            if (g_gdb.has_exec_run_start)
+                gdb::send_blocking("-exec-run --start");
         } else {
-            gdb.debug_filename = "";
+            g_gdb.debug_filename = "";
         }
     }
 
@@ -3440,7 +3433,7 @@ int main(int argc, char** argv)
     const auto OnDragDrop = [](GLFWwindow* /*window*/, int count, const char** paths) {
         if (count == 1) {
             const char* file = paths[0];
-            if (VerifyFileExecutable(file)) {
+            if (is_executable(file)) {
                 gui.drag_drop_exe_path = file;
             }
         }

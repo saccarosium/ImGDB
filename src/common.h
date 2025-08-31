@@ -259,61 +259,6 @@ const size_t BAD_INDEX
 
 #define FILE_IDX_INVALID 0
 
-struct GDB {
-    pid_t spawned_pid; // process running GDB
-    String debug_filename; // debug executable filename
-    String debug_args; // args passed to debug executable
-    String filename; // filename of spawned GDB
-    String args; // args passed to spawned GDB
-    String ptty_slave;
-    int fd_ptty_master;
-
-    bool end_program;
-    pthread_t thread_read_interp;
-    // pthread_t thread_write_stdin;
-
-    sem_t* recv_block;
-    pthread_mutex_t modify_block;
-
-    // MI command sent from GDB
-    int fd_in_read;
-    int fd_in_write;
-
-    // commands sent to GDB
-    int fd_out_read;
-    int fd_out_write;
-
-    // ordinal ID that gets incremented on every
-    // GDB_SendBlocking record sent
-    uint32_t record_id = 1;
-
-    // raw data, guarded by modify_storage_lock
-    // a block is one or more Records
-    char block_data[1024 * 1024];
-    std::vector<Span> block_spans; // pipe read span into block_data
-
-    // capabilities of the spawned GDB process using -list-features
-    bool has_frozen_varobj;
-    bool has_pending_breakpoints;
-    bool has_python_scripting_support;
-    bool has_thread_info;
-    bool has_data_rw_bytes; // -data-read-memory bytes and -data-write-memory-bytes
-    bool has_async_breakpoint_notification; // bkpt changes make async record
-    bool has_ada_task_info;
-    bool has_language_option;
-    bool has_gdb_mi_command;
-    bool has_undefined_command_error_code;
-    bool has_exec_run_start;
-    bool has_data_disassemble_option_a; // -data-disassemble -a function
-
-    // capabilities of the target using -list-target-features
-    bool supports_async_execution; // GDB will accept further commands while the target is running.
-    bool supports_reverse_execution; // target is capable of reverse execution
-
-    bool echo_next_no_symbol_in_context; // GDB MI error "no symbol "xyz" in current context"
-                                         // useful sometimes but mostly gets spammed in console
-};
-
 struct Program {
     // console messages ordered from newest to oldest
     char log[64 * 1024];
@@ -348,11 +293,9 @@ struct Program {
 };
 
 extern Program prog;
-extern GDB gdb;
 
 const char* GetErrorString(int _errno);
 void WriteToConsoleBuffer(const char* raw, size_t rawsize);
-bool VerifyFileExecutable(const char* filename);
-bool DoesFileExist(const char* filename, bool print_error_on_missing = true);
+bool is_executable(const char* path);
 bool DoesProcessExist(pid_t p);
 bool InvokeShellCommand(std::string_view command, String& output);
