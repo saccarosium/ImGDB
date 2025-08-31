@@ -734,7 +734,7 @@ void GetFunctionDisassembly(const Frame& frame)
 
     const File& file = prog.files[frame.file_idx];
     if (file.lines.size() == 0) {
-        if (!g_gdb.has_data_disassemble_option_a) {
+        if (!(g_gdb.capabilities & GDB_DATADIS)) {
             return; // operation not supported, bail early
         } else {
             // some frames don't have an associated file ex: _start function after returning from
@@ -1457,7 +1457,7 @@ void Draw()
 
                 if (g_gdb.spawned_pid != 0 && gdb::set_inferior_exe(debug_filename)
                     && gdb::set_inferior_args(debug_args)) {
-                    if (g_gdb.has_exec_run_start)
+                    if (g_gdb.capabilities & GDB_RUNSTART)
                         gdb::send_blocking("-exec-run --start");
 
                     char* exe_abspath = realpath(debug_filename, NULL);
@@ -3314,7 +3314,7 @@ int main(int argc, char** argv)
 
     if (g_gdb.spawned_pid != 0 && !g_gdb.debug_filename.empty()) {
         if (gdb::set_inferior_exe(g_gdb.debug_filename)) {
-            if (g_gdb.has_exec_run_start)
+            if (g_gdb.capabilities & GDB_RUNSTART)
                 gdb::send_blocking("-exec-run --start");
         } else {
             g_gdb.debug_filename = "";

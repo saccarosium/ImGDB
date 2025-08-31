@@ -1,3 +1,6 @@
+// GDB Layer
+
+#include "gdb.h"
 namespace gdb {
 
 static ssize_t read_block_maxsize = 0;
@@ -154,47 +157,31 @@ bool start_process(String gdb_filename, String gdb_args)
         Printf("spawned %s %s\n", gdb_filename.c_str(), gdb_args.c_str());
     }
 
-    // GDB_SendBlocking("-environment-cd
-    // /mnt/c/Users/Kyle/Documents/commercial-codebases/original/stevie");
-    // GDB_SendBlocking("-file-exec-and-symbols stevie");
-    // GDB_SendBlocking("-exec-arguments stevie.c");
-
-    // debug GAS
-    // GDB_SendBlocking("-environment-cd
-    // /mnt/c/Users/Kyle/Documents/commercial-codebases/original/binutils/binutils-gdb/gas");
-    // GDB_SendBlocking("-file-exec-and-symbols as-new");
-
-    // GDB_SendBlocking("-environment-cd \"/mnt/c/Users/Kyle/Downloads/Chrome
-    // Downloads/ARM/AARCH32\""); GDB_SendBlocking("-file-exec-and-symbols advent.out");
-
+    // TODO(sacca): parse more sensibly the data
     Record rec;
-
-    if (send_blocking("-list-features", rec)) {
-        const char* src = rec.buf.c_str();
-        g_gdb.has_frozen_varobj = (NULL != strstr(src, "frozen-varobjs"));
-        g_gdb.has_pending_breakpoints = (NULL != strstr(src, "pending-breakpoints"));
-        g_gdb.has_python_scripting_support = (NULL != strstr(src, "python"));
-        g_gdb.has_thread_info = (NULL != strstr(src, "thread-info"));
-        g_gdb.has_data_rw_bytes = (NULL != strstr(src, "data-read-memory-bytes"));
-        g_gdb.has_async_breakpoint_notification = (NULL != strstr(src, "breakpoint-notifications"));
-        g_gdb.has_ada_task_info = (NULL != strstr(src, "ada-task-info"));
-        g_gdb.has_language_option = (NULL != strstr(src, "language-option"));
-        g_gdb.has_gdb_mi_command = (NULL != strstr(src, "info-gdb-mi-command"));
-        g_gdb.has_undefined_command_error_code
-            = (NULL != strstr(src, "undefined-command-error-code"));
-        g_gdb.has_exec_run_start = (NULL != strstr(src, "exec-run-start-option"));
-        g_gdb.has_data_disassemble_option_a = (NULL != strstr(src, "data-disassemble-a-option"));
-
-        // TODO: "Whenever a target can change, due to commands such as -target-select,
-        // -target-attach or -exec-run, the list of target features may change,
-        // and the frontend should obtain it again
-        // GDB_SendBlocking("-list-target-features", rec);
-
-    } else {
+    if (!send_blocking("-list-features", rec))
         return false;
-    }
 
-    g_gdb.supports_async_execution = send_blocking("-gdb-set mi-async");
+    const char* src = rec.buf.c_str();
+    g_gdb.capabilities |= (strstr(src, "frozen-varobjs") != NULL) ? GDB_FRVAROBJ : 0;
+    g_gdb.capabilities |= (strstr(src, "pending-breakpoints") != NULL) ? GDB_PBREAK : 0;
+    g_gdb.capabilities |= (strstr(src, "python") != NULL) ? GDB_PYTHON : 0;
+    g_gdb.capabilities |= (strstr(src, "thread-info") != NULL) ? GDB_THINFO : 0;
+    g_gdb.capabilities |= (strstr(src, "data-read-memory-bytes") != NULL) ? GDB_RWBYTES : 0;
+    g_gdb.capabilities |= (strstr(src, "breakpoint-notifications") != NULL) ? GDB_PBREAK : 0;
+    g_gdb.capabilities |= (strstr(src, "ada-task-info") != NULL) ? GDB_ADA : 0;
+    g_gdb.capabilities |= (strstr(src, "language-option") != NULL) ? GDB_LANGOPT : 0;
+    g_gdb.capabilities |= (strstr(src, "info-gdb-mi-command") != NULL) ? GDB_MICMD : 0;
+    // g_gdb.capabilities |= (strstr(src, "undefined-command-error-code") != NULL) ?  : 0;
+    g_gdb.capabilities |= (strstr(src, "exec-run-start-option") != NULL) ? GDB_RUNSTART : 0;
+    g_gdb.capabilities |= (strstr(src, "data-disassemble-a-option") != NULL) ? GDB_DATADIS : 0;
+
+    // TODO: "Whenever a target can change, due to commands such as -target-select,
+    // -target-attach or -exec-run, the list of target features may change,
+    // and the frontend should obtain it again
+    // GDB_SendBlocking("-list-target-features", rec);
+
+    g_gdb.capabilities |= (send_blocking("-gdb-set mi-async")) ? GDB_ASEXE : 0;
     send_blocking("-gdb-set non-stop");
 
     if (g_gdb.fd_ptty_master) {
@@ -830,7 +817,7 @@ bool send(const char* cmd)
 
     if (g_gdb.spawned_pid == 0) {
         Print("GDB process not started\n");
-    } else if (prog.running && !g_gdb.supports_async_execution) {
+    } else if (prog.running && !(g_gdb.capabilities & GDB_ASEXE)) {
         Print("target doesn't support async execution\n");
     } else {
         // write to GDB

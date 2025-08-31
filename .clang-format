@@ -2,4 +2,5 @@
 AlignEscapedNewlines: Left
 BasedOnStyle: WebKit
 ColumnLimit: 100
+NamespaceIndentation: None
 SortIncludes: false

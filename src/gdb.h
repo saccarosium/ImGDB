@@ -1,4 +1,36 @@
+// GDB Layer
+
 #pragma once
+
+#define _GDB_CAP(x) (1 << (x % 32))
+
+// Frozen Var Objects
+#define GDB_FRVAROBJ _GDB_CAP(0)
+// Pending Breakpoints
+#define GDB_PBREAK _GDB_CAP(1)
+// Python Scripting
+#define GDB_PYTHON _GDB_CAP(2)
+// Thread Info
+#define GDB_THINFO _GDB_CAP(3)
+// Commands -data-read-memory bytes and -data-write-memory-bytes
+#define GDB_RWBYTES _GDB_CAP(4)
+// Async Breakpoints
+#define GDB_ASBREAK _GDB_CAP(5) // Language
+// Ada Task Info
+#define GDB_ADA _GDB_CAP(6)
+// Language Option
+#define GDB_LANGOPT _GDB_CAP(7)
+// Mi Command
+#define GDB_MICMD _GDB_CAP(8)
+// Data Disasseble
+#define GDB_DATADIS _GDB_CAP(9)
+// Async Execution
+#define GDB_ASEXE _GDB_CAP(10)
+// Reverse Execution
+#define GDB_REVEXE _GDB_CAP(11)
+// Run Start
+#define GDB_RUNSTART _GDB_CAP(11)
+
 
 struct GDB {
     pid_t spawned_pid; // process running GDB
@@ -33,23 +65,7 @@ struct GDB {
     char block_data[1024 * 1024];
     std::vector<Span> block_spans; // pipe read span into block_data
 
-    // capabilities of the spawned GDB process using -list-features
-    bool has_frozen_varobj;
-    bool has_pending_breakpoints;
-    bool has_python_scripting_support;
-    bool has_thread_info;
-    bool has_data_rw_bytes; // -data-read-memory bytes and -data-write-memory-bytes
-    bool has_async_breakpoint_notification; // bkpt changes make async record
-    bool has_ada_task_info;
-    bool has_language_option;
-    bool has_gdb_mi_command;
-    bool has_undefined_command_error_code;
-    bool has_exec_run_start;
-    bool has_data_disassemble_option_a; // -data-disassemble -a function
-
-    // capabilities of the target using -list-target-features
-    bool supports_async_execution; // GDB will accept further commands while the target is running.
-    bool supports_reverse_execution; // target is capable of reverse execution
+    u32 capabilities = 0;
 
     bool echo_next_no_symbol_in_context; // GDB MI error "no symbol "xyz" in current context"
                                          // useful sometimes but mostly gets spammed in console
