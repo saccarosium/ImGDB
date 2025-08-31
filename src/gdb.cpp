@@ -73,18 +73,6 @@ void* read_interpreter_blocks(void*)
 bool start_process(String gdb_filename, String gdb_args)
 {
     int rc = 0;
-    if (!is_executable(gdb_filename.c_str()))
-        return false;
-
-    String version;
-    String gdb_version_command = StringPrintf("%s --version 2>&1", gdb_filename.c_str());
-    if (!InvokeShellCommand(gdb_version_command, version))
-        return false;
-
-    if ((NULL == strstr(version.c_str(), "GNU")) || (NULL == strstr(version.c_str(), "gdb"))) {
-        PrintErrorf("file not GDB %s\n", gdb_filename.c_str());
-        return false;
-    }
 
     // TODO: using different versions of machine interpreter
     String args = gdb_filename + " " + gdb_args + " --interpreter=mi ";
@@ -128,23 +116,23 @@ bool start_process(String gdb_filename, String gdb_args)
         gdb_argv[i] = (char*)((size_t)gdb_argv[i] + buf.data());
     }
 
-    // get all the environment variables for the process
-    String env;
-    std::vector<char*> envptr;
-    if (!InvokeShellCommand("printenv", env))
+    ExecResult res = os::exec("printenv");
+    if (res.rc < 0)
         return false;
 
-    size_t lineoff = 0;
+    std::vector<const char*> environ;
+    environ.reserve(10);
 
-    for (size_t i = 0; i < env.size(); i++) {
-        if (env[i] == '\n') {
-            envptr.push_back(&env[0] + lineoff);
-            env[i] = '\0';
-            lineoff = i + 1;
+    size_t offset = 0;
+    for (size_t i = 0; i < res.stdout.size(); ++i) {
+        if (res.stdout[i] == '\n') {
+            environ.push_back(res.stdout.c_str() + offset);
+            res.stdout[i] = '\0';
+            offset = i + 1;
         }
     }
 
-    envptr.push_back(NULL);
+    environ.push_back(NULL);
 
     // start the GDB process
     posix_spawn_file_actions_t actions = {};
@@ -157,7 +145,7 @@ bool start_process(String gdb_filename, String gdb_args)
     posix_spawnattr_init(&attrs);
 
     rc = posix_spawnp((pid_t*)&g_gdb.spawned_pid, gdb_filename.c_str(), &actions, &attrs,
-        gdb_argv.data(), envptr.data());
+        gdb_argv.data(), const_cast<char* const*>(environ.data()));
     if (rc != 0) {
         errno = rc;
         PrintErrorf("posix_spawnp %s\n", GetErrorString(errno));

@@ -296,6 +296,3 @@ extern Program prog;
 
 const char* GetErrorString(int _errno);
 void WriteToConsoleBuffer(const char* raw, size_t rawsize);
-bool is_executable(const char* path);
-bool DoesProcessExist(pid_t p);
-bool InvokeShellCommand(std::string_view command, String& output);

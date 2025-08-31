@@ -28,8 +28,12 @@
 #include <liberation_mono.h>
 
 // Mine
+#include "zero.hpp"
+#include "os.hpp"
 #include "common.h"
 #include "gdb.h"
+
+#include "os.cpp"
 #include "gdb.cpp"
 
 // imgui/misc/imgui_stdlib.cpp
@@ -144,64 +148,6 @@ String _StringPrintf(int /* vargs_check */, const char* fmt, ...)
     }
 
     return result;
-}
-
-bool InvokeShellCommand(std::string_view command, String& output)
-{
-    bool result = false;
-    output.clear();
-    FILE* f = popen(command.data(), "r");
-    if (f == NULL) {
-        PrintErrorf("popen shell command \"%s\" %s\n", command.data(), GetErrorString(errno));
-    } else {
-        errno = 0;
-        char tmp[1024] = {};
-        ssize_t bytes_read = 0;
-        while (0 < (bytes_read = fread(tmp, 1, sizeof(tmp), f)))
-            output.insert(output.size(), tmp, bytes_read);
-
-        if (ferror(f)) {
-            PrintErrorf("error reading shell command \"%s\"\n", command.data());
-        } else {
-            result = true;
-        }
-
-        pclose(f);
-        f = NULL;
-    }
-
-    return result;
-}
-
-inline bool DoesProcessExist(pid_t p)
-{
-    return std::filesystem::exists(std::format("/proc/{}", (int)p));
-}
-
-void EndProcess(pid_t p)
-{
-    if (p == 0)
-        return;
-
-    if (0 > kill(p, SIGTERM)) {
-        PrintErrorf("kill SIGTERM %s\n", GetErrorString(errno));
-    } else {
-        usleep(1000000 / 10);
-        if (0 > kill(p, SIGKILL)) {
-            PrintErrorf("kill SIGKILL %s\n", GetErrorString(errno));
-        }
-
-        if (DoesProcessExist(p)) {
-            // defunct process, remove it with waitpid
-            int status = 0;
-            pid_t tmp = waitpid(p, &status, WNOHANG);
-            if (tmp < 0) {
-                PrintErrorf("waitpid %s\n", GetErrorString(errno));
-            } else if (tmp == p) {
-                Printf("ended process %d: exit code %d\n", (int)p, WEXITSTATUS(status));
-            }
-        }
-    }
 }
 
 void ResetProgramState()
@@ -1390,7 +1336,6 @@ void Draw()
     if (last_num_recs == prog.num_recs)
         prog.num_recs = 0;
 
-    bool open_about_tug = false;
     if (ImGui::BeginMainMenuBar()) {
         struct RegisterName {
             String text;
@@ -1502,7 +1447,7 @@ void Draw()
                     if (g_gdb.spawned_pid != 0) {
                         Printf("ending %s...", g_gdb.filename.c_str());
                         g_gdb.filename = "";
-                        EndProcess(g_gdb.spawned_pid);
+                        os::kill_process(g_gdb.spawned_pid);
                         ResetProgramState();
                         g_gdb.spawned_pid = 0;
                     }
@@ -1603,27 +1548,6 @@ void Draw()
         }
 
         ImGui::EndMainMenuBar();
-    }
-
-    if (open_about_tug) {
-        ImGui::OpenPopup("About Tug");
-        gui.show_about_tug = true;
-    }
-
-    if (ImGui::BeginPopupModal(
-            "About Tug", &gui.show_about_tug, ImGuiWindowFlags_AlwaysAutoResize)) {
-        const char* url = "https://github.com/kyle-sylvestre/Tug";
-        ImColor link_color = ImColor(84, 84, 255);
-        ImGui::TextColored(link_color, "%s", url);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        }
-        if (ImGui::IsItemClicked()) {
-            String output;
-            String cmd = StringPrintf("xdg-open \"%s\"", url);
-            InvokeShellCommand(cmd, output);
-        }
-        ImGui::EndPopup();
     }
 
     if (gui.show_source) {
@@ -3160,19 +3084,6 @@ void Draw()
     }
 }
 
-bool is_executable(const char* path)
-{
-    struct stat stats = {};
-
-    if (stat(path, &stats) == -1)
-        return false;
-
-    if (!S_ISREG(stats.st_mode) || (stats.st_mode & S_IXUSR) == 0)
-        return false;
-
-    return true;
-}
-
 static void glfw_error_callback(int error, const char* description)
 {
     PrintErrorf("Glfw Error %d %s\n", error, description);
@@ -3306,7 +3217,7 @@ int main(int argc, char** argv)
             close(g_gdb.fd_out_write);
 
         if (g_gdb.spawned_pid)
-            EndProcess(g_gdb.spawned_pid);
+            os::kill_process(g_gdb.spawned_pid);
 
         pthread_mutex_t zmutex = {};
         if (memcmp(&zmutex, &g_gdb.modify_block, sizeof(pthread_mutex_t)) != 0)
@@ -3379,13 +3290,6 @@ int main(int argc, char** argv)
             PrintErrorf("posix_openpt %s\n", GetErrorString(errno));
         }
 
-        String tmp;
-        if (InvokeShellCommand("which gdb", tmp)) {
-            std::erase_if(tmp, [](char c) { return c == '\r' || c == '\n' || c == ' '; });
-            if (std::filesystem::exists(tmp))
-                g_gdb.filename = tmp;
-        }
-
         auto sig_handler = [](int) {
             if (gui.window)
                 glfwSetWindowShouldClose(gui.window, 1);
@@ -3433,7 +3337,7 @@ int main(int argc, char** argv)
     const auto OnDragDrop = [](GLFWwindow* /*window*/, int count, const char** paths) {
         if (count == 1) {
             const char* file = paths[0];
-            if (is_executable(file)) {
+            if (os::fs::is_executable(file)) {
                 gui.drag_drop_exe_path = file;
             }
         }

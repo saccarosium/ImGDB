@@ -4,7 +4,7 @@ struct GDB {
     pid_t spawned_pid; // process running GDB
     String debug_filename; // debug executable filename
     String debug_args; // args passed to debug executable
-    String filename; // filename of spawned GDB
+    String filename = "gdb"; // filename of spawned GDB
     String args; // args passed to spawned GDB
     String ptty_slave;
     int fd_ptty_master;
