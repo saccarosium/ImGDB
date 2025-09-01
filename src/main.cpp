@@ -38,7 +38,7 @@
 
 static usize s_allocations = 0;
 
-void *operator new(size_t n)
+void* operator new(size_t n)
 {
     ++s_allocations;
     return malloc(n);
@@ -1067,6 +1067,8 @@ String GetLine(const File& f, size_t line_idx)
     return result;
 }
 
+ImFont* g_font = nullptr;
+
 void Draw()
 {
     Record rec;
@@ -1428,7 +1430,8 @@ void Draw()
 
     if (gui.show_source) {
         float saved_frame_border_size = ImGui::GetStyle().FrameBorderSize;
-        ImGui::GetStyle().FrameBorderSize = 0.0f; // disable line border around breakpoints
+        // ImGui::GetStyle().FrameBorderSize = 0.0f; // disable line border around breakpoints
+        ImGui::PushFont(g_font);
         ImGui::SetNextWindowBgAlpha(
             1.0); // @Imgui: bug where GetStyleColor doesn't respect window opacity
         ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
@@ -1876,6 +1879,7 @@ void Draw()
             ImGui::EndChild();
 
         ImGui::End();
+        ImGui::PopFont();
         ImGui::GetStyle().FrameBorderSize = saved_frame_border_size; // restore saved size
     }
 
@@ -2869,7 +2873,7 @@ int main(int argc, char** argv)
 
     glfwMakeContextCurrent(gui.window);
     glfwSwapInterval(1); // Enable vsync
-    
+
     if (ImGui::CreateContext() == NULL)
         exit(EXIT_FAILURE);
 
@@ -2892,6 +2896,19 @@ int main(int argc, char** argv)
     ImGuiStyle& style = ImGui::GetStyle();
     style.ScrollbarRounding = 2.0f;
     style.TabRounding = 2.0f;
+
+    io.Fonts->Clear();
+    ImGui_ImplOpenGL2_DestroyFontsTexture();
+
+    ImFontConfig cfg = {};
+    cfg.FontDataOwnedByAtlas = false; // static memory
+    g_font = io.Fonts->AddFontFromMemoryTTF(
+        liberation_mono_ttf, sizeof(liberation_mono_ttf), 16.0f, &cfg);
+
+    if (g_font == NULL)
+        return EXIT_FAILURE;
+
+    ImGui_ImplOpenGL2_CreateFontsTexture();
 
     // Main loop
     while (!glfwWindowShouldClose(gui.window)) {

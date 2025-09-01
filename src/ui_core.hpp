@@ -1,7 +1,5 @@
 #pragma once
 
-#define DEFAULT_FONT_SIZE 16.0f
-
 enum class LineDisplay {
     Source,
     Disassembly,
