@@ -18,10 +18,16 @@ using StringView = std::string_view;
 
 template <typename T> using Vector = std::vector<T>;
 template <typename T, usize S> using Array = std::array<T, S>;
-template <typename T> using Optional = std::optional<T>;
 
 // Macros
 
 #define KB(x) (x * 1024)
 #define MB(x) (x * 1024 * 1024)
 #define GB(x) (x * 1024 * 1024 * 1024)
+
+#define BitField(x) (1 << x)
+
+// Memory
+
+void *memzero(void* ptr, usize n);
+

@@ -1,21 +1,4 @@
-// Copyright (C) 2022 Kyle Sylvestre
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
 #pragma once
-
-using String = std::basic_string<char, std::char_traits<char>>;
 
 #define VARGS_CHECK(fmt, ...) (0 && snprintf(NULL, 0, fmt, __VA_ARGS__))
 #define StringPrintf(fmt, ...) _StringPrintf(VARGS_CHECK(fmt, __VA_ARGS__), fmt, __VA_ARGS__)
@@ -32,11 +15,7 @@ String _StringPrintf(int vargs_check, const char* fmt, ...);
 #define GetPinned(v, min, max) GetMin(GetMax(v, min), max)
 #define GetAbs(a, b) (a > b) ? a - b : b - a
 
-template <typename T>
-inline void Zeroize(T& value)
-{
-    memset(&value, 0, sizeof(value));
-}
+template <typename T> inline void Zeroize(T& value) { memset(&value, 0, sizeof(value)); }
 
 // c standard wrappers
 #if !defined(NDEBUG)
@@ -108,12 +87,8 @@ const char* const DEFAULT_REG_ARM[] = {
     "cpsr",
 };
 
-const char* const DEFAULT_REG_AMD64[] = {
-    "rax", "rbx", "rcx", "rdx",
-    "rbp", "rsp", "rip", "rsi",
-    "rdi", "r8", "r9", "r10", "r11",
-    "r12", "r13", "r14", "r15"
-};
+const char* const DEFAULT_REG_AMD64[] = { "rax", "rbx", "rcx", "rdx", "rbp", "rsp", "rip", "rsi",
+    "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15" };
 
 const char* const DEFAULT_REG_X86[] = {
     "eax",
@@ -254,8 +229,7 @@ struct Thread {
 #define PREFIX_TARGET_LOG '@'
 #define PREFIX_CONSOLE_LOG '~'
 
-const size_t BAD_INDEX
-    = ~0;
+const size_t BAD_INDEX = ~0;
 
 #define FILE_IDX_INVALID 0
 

@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++23 -Wall -Wextra -Werror -pedantic
+CXXFLAGS = -std=c++20 -Wall -Wextra -Werror -pedantic -Wno-mismatched-new-delete
 CXXFLAGS += -I./vendor -I./vendor/glfw/include
 
 LIBS = -lGL

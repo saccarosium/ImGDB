@@ -1,26 +1,24 @@
+#include <cstdlib>
 #include <fstream>
 #include <functional>
-#include <filesystem>
-#include <unistd.h>
 #include <string>
 #include <vector>
-#include <sys/wait.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <inttypes.h>
-#include <libgen.h>
 #include <errno.h>
 #include <pthread.h>
 #include <spawn.h>
-#include <signal.h>
 #include <fcntl.h>
 #include <semaphore.h>
+#include <unistd.h>
 #include <poll.h>
 #include <sys/time.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 // third party
 #include <GLFW/glfw3.h>
@@ -30,11 +28,21 @@
 // Mine
 #include "zero.hpp"
 #include "os.hpp"
-#include "common.h"
-#include "gdb.h"
+#include "common.hpp"
+#include "gdb.hpp"
+#include "ui_core.hpp"
 
 #include "os.cpp"
 #include "gdb.cpp"
+#include "ui_core.cpp"
+
+static usize s_allocations = 0;
+
+void *operator new(size_t n)
+{
+    ++s_allocations;
+    return malloc(n);
+}
 
 // imgui/misc/imgui_stdlib.cpp
 namespace ImGui {
@@ -76,6 +84,7 @@ bool InputText(const char* label, String* str, ImGuiInputTextFlags flags = 0,
     return InputText(
         label, (char*)str->c_str(), str->capacity() + 1, flags, InputTextCallback, &cb_user_data);
 }
+
 }
 
 #include <errnoname.c>
@@ -175,85 +184,14 @@ void ResetProgramState()
     prog.thread_idx = BAD_INDEX;
 }
 
-enum class LineDisplay {
-    Source,
-    Disassembly,
-    Source_And_Disassembly,
-};
-
-enum WindowTheme {
-    WindowTheme_Light,
-    WindowTheme_DarkPurple,
-    WindowTheme_DarkBlue,
-};
-
-enum Jump {
-    Jump_None,
-    Jump_Goto,
-    Jump_Search,
-    Jump_Stopped,
-};
-
-#define DEFAULT_FONT_SIZE 16.0f
 #define MIN_FONT_SIZE 8.0f
 #define MAX_FONT_SIZE 72.0f
 
-struct Session {
-    String debug_exe;
-    String debug_args;
-};
-
-struct GUI {
-    GLFWwindow* window;
-    LineDisplay line_display = LineDisplay::Source;
-    std::vector<DisassemblyLine> line_disasm;
-    std::vector<DisassemblySourceLine> line_disasm_source;
-    bool show_machine_interpreter_commands;
-
-    Jump jump_type;
-    bool source_search_bar_open;
-    char source_search_keyword[256];
-    bool source_found_line;
-    size_t source_found_line_idx;
-    size_t goto_line_idx;
-    bool refresh_docking_space = true;
-
-    // use two font sizes: global and source window
-    // change source window size with CTRL+Scroll or settings option
-    bool use_default_font = true;
-    ImFont* default_font;
-    float font_size = DEFAULT_FONT_SIZE;
-    String font_filename;
-    ImFont* source_font;
-    float source_font_size = DEFAULT_FONT_SIZE;
-
-    bool show_source = true;
-    bool show_control = true;
-    bool show_callstack = true;
-    bool show_registers = false;
-    bool show_locals = true;
-    bool show_watch = true;
-    bool show_breakpoints = false;
-    bool show_threads = false;
-    bool show_directory_viewer = false;
-    bool show_about_tug = false;
-    WindowTheme window_theme = WindowTheme_DarkBlue;
-    std::vector<Session> session_history;
-    int hover_delay_ms = 100;
-    String drag_drop_exe_path;
-
-    // shutdown variables
-    bool started_imgui_opengl2;
-    bool started_imgui_glfw;
-    bool created_imgui_context;
-    bool initialized_glfw;
-};
-
 Program prog;
 GDB g_gdb;
-GUI gui;
+UI gui;
 
-static uint64_t ParseHex(const String& str)
+static uint64_t ParseHex(StringView str)
 {
     uint64_t result = 0;
     uint64_t pow = 1;
@@ -274,40 +212,6 @@ static uint64_t ParseHex(const String& str)
         pow *= 16;
     }
     return result;
-}
-
-static void SetWindowTheme(WindowTheme theme)
-{
-    static const auto GetLuminance01 = [](ImColor col) -> float {
-        return (0.2126 * col.Value.x) + (0.7152 * col.Value.y) + (0.0722 * col.Value.z);
-    };
-    float lum = GetLuminance01(ImGui::GetStyleColorVec4(ImGuiCol_WindowBg));
-    IM_COL32_WIN_RED = ImColor(1.0f, 0.5f - 0.5f * lum, 0.5f - 0.5f * lum, 1.0f);
-    ImGuiStyle& style = ImGui::GetStyle();
-
-    switch (theme) {
-    case WindowTheme_Light: {
-        ImGui::StyleColorsLight();
-        style.FrameBorderSize = 1.0f;
-
-        // make popups grey background
-        style.Colors[ImGuiCol_PopupBg] = style.Colors[ImGuiCol_WindowBg];
-    } break;
-
-    case WindowTheme_DarkPurple: {
-        ImGui::StyleColorsClassic();
-        style.FrameBorderSize = 0.0f;
-    } break;
-
-    case WindowTheme_DarkBlue: {
-        ImGui::StyleColorsDark();
-        style.FrameBorderSize = 0.0f;
-    } break;
-
-        DefaultInvalid
-    }
-
-    gui.window_theme = theme;
 }
 
 bool LoadFile(File& file)
@@ -563,7 +467,8 @@ VarObj CreateVarObj(String name, String value = "")
                   };
 
             if (result.expr.atoms.size() > 1)
-                gdb::iterate_atoms(result.expr, result.expr.atoms[0], RemoveStringBackslashes, NULL);
+                gdb::iterate_atoms(
+                    result.expr, result.expr.atoms[0], RemoveStringBackslashes, NULL);
         }
     }
 
@@ -967,7 +872,6 @@ void QueryFrame(bool force_clear_locals)
     // query the prog.frame_idx for locals, callstack, globals
     Record rec;
     char tmpbuf[4096];
-    gui.jump_type = Jump_Stopped;
     QueryWatchlist();
 
     tsnprintf(tmpbuf, "-stack-list-frames --thread %d", GetActiveThreadID());
@@ -1007,7 +911,7 @@ void QueryFrame(bool force_clear_locals)
                 // same as what GDB does in source-cache.c
                 struct stat source_st = {};
                 struct stat exe_st = {};
-                if (std::filesystem::exists(file.filename)
+                if (os::fs::exists(file.filename)
                     && (0 > stat(file.filename.c_str(), &source_st)
                         || 0 > stat(g_gdb.debug_filename.c_str(), &exe_st))) {
                     PrintErrorf("stat %s\n", GetErrorString(errno));
@@ -1304,7 +1208,8 @@ void Draw()
                 const RecordAtom* stopped_threads = gdb::extract_atom("stopped-threads", parse_rec);
                 if (stopped_threads != NULL) {
                     if (stopped_threads->type == Atom_String) {
-                        stopped_all = ("all" == gdb::get_atom_string(stopped_threads->value, parse_rec));
+                        stopped_all
+                            = ("all" == gdb::get_atom_string(stopped_threads->value, parse_rec));
                     } else if (stopped_threads->type == Atom_Array) {
                         for (const RecordAtom& stopped : gdb::iter_child(rec, stopped_threads))
                             stopped_all |= ("all" == gdb::get_atom_string(stopped.value, rec));
@@ -1359,7 +1264,6 @@ void Draw()
                     prog.files[idx].lines.clear();
                     if (LoadFile(prog.files[idx])) {
                         prog.file_idx = idx;
-                        gui.jump_type = Jump_Goto;
                         gui.goto_line_idx = 0;
                     }
                 }
@@ -1372,14 +1276,6 @@ void Draw()
         static bool show_register_window = false;
         static bool is_debug_program_open = false;
 
-        if (gui.drag_drop_exe_path != "") {
-            is_debug_program_open = false; // assign input boxes
-            ImGuiWindow* window = ImGui::GetCurrentWindow();
-            ImGui::OpenPopup(window->GetID("Debug"));
-            ImGui::SetActiveID(window->GetID(""), window);
-            GImGui->ActiveIdMouseButton = ImGuiMouseButton_Left; // avoid hitting assertion
-        }
-
         if (ImGui::BeginMenu("Debug")) {
             static FileWindowContext ctx;
             static char gdb_filename[PATH_MAX];
@@ -1391,12 +1287,7 @@ void Draw()
 
             if (!is_debug_program_open) {
                 is_debug_program_open = true;
-                if (gui.drag_drop_exe_path != "") {
-                    tsnprintf(debug_filename, "%s", gui.drag_drop_exe_path.c_str());
-                    gui.drag_drop_exe_path = "";
-                } else {
-                    tsnprintf(debug_filename, "%s", g_gdb.debug_filename.c_str());
-                }
+                tsnprintf(debug_filename, "%s", g_gdb.debug_filename.c_str());
                 tsnprintf(debug_args, "%s", g_gdb.debug_args.c_str());
             }
 
@@ -1489,7 +1380,6 @@ void Draw()
             ImGui::MenuItem("Watch##Checkbox", "", &gui.show_watch);
             ImGui::MenuItem("Breakpoints##Checkbox", "", &gui.show_breakpoints);
             ImGui::MenuItem("Threads##Checkbox", "", &gui.show_threads);
-            ImGui::MenuItem("Directory Viewer##Checkbox", "", &gui.show_directory_viewer);
 
             ImGui::EndMenu();
         }
@@ -1539,122 +1429,10 @@ void Draw()
     if (gui.show_source) {
         float saved_frame_border_size = ImGui::GetStyle().FrameBorderSize;
         ImGui::GetStyle().FrameBorderSize = 0.0f; // disable line border around breakpoints
-        ImGui::PushFont(gui.source_font);
         ImGui::SetNextWindowBgAlpha(
             1.0); // @Imgui: bug where GetStyleColor doesn't respect window opacity
         ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
         ImGui::Begin("Source", &gui.show_source, ImGuiWindowFlags_HorizontalScrollbar);
-
-        if (ImGui::IsWindowFocused() && ImGui::GetIO().KeyCtrl
-            && ImGui::GetIO().MouseWheel != 0.0f) {
-            // increase/decrease the font
-            float tmp = GetPinned(gui.source_font_size + ImGui::GetIO().MouseWheel, 8.0f, 72.0f);
-            if (gui.source_font_size != tmp) {
-                gui.source_font_size = tmp;
-            }
-        }
-
-        if (IsKeyPressed(ImGuiKey_F, ImGuiKeyModFlags_Ctrl)) {
-            gui.source_search_bar_open = true;
-            ImGui::SetKeyboardFocusHere(0); // auto click the input box
-            gui.source_search_keyword[0] = '\0';
-        } else if (gui.source_search_bar_open && IsKeyPressed(ImGuiKey_Escape)) {
-            // jump to the found line permanently, if found
-            gui.source_search_bar_open = false;
-
-            if (gui.source_found_line) {
-                gui.jump_type = Jump_Goto;
-                gui.goto_line_idx = gui.source_found_line_idx;
-            }
-        }
-
-        //
-        // goto window: jump to a line in the source document
-        //
-        {
-            static bool goto_line_open = false;
-            bool goto_line_activate = false;
-            int goto_line_idx = 0;
-
-            if (IsKeyPressed(ImGuiKey_G, ImGuiKeyModFlags_Ctrl)) {
-                goto_line_open = true;
-                goto_line_activate = true;
-            }
-
-            if (goto_line_open && prog.file_idx < prog.files.size()) {
-                ImGui::SetNextWindowSize(ImVec2(150.0f, 100.0f), ImGuiCond_Once);
-                ImGui::Begin("Goto Line", &goto_line_open);
-                if (goto_line_activate) {
-                    ImGui::SetKeyboardFocusHere(0); // auto click the goto line field
-                    goto_line_activate = false;
-                }
-
-                if (IsKeyPressed(ImGuiKey_Escape))
-                    goto_line_open = false;
-
-                if (ImGui::InputInt("##goto_line", &goto_line_idx, 1, 1,
-                        ImGuiInputTextFlags_EnterReturnsTrue)) {
-                    size_t linecount = prog.files[prog.file_idx].lines.size();
-                    if (goto_line_idx < 0)
-                        goto_line_idx = 0;
-                    if ((size_t)goto_line_idx >= linecount)
-                        goto_line_idx = (linecount > 0) ? linecount - 1 : 0;
-                    goto_line_open = false;
-                    gui.jump_type = Jump_Goto;
-                    gui.goto_line_idx = (size_t)goto_line_idx;
-                }
-                ImGui::End();
-            }
-        }
-
-        //
-        // search bar: look for text in source window
-        //
-
-        if (gui.source_search_bar_open) {
-            ImGui::InputText(
-                "##source_search", gui.source_search_keyword, sizeof(gui.source_search_keyword));
-            if (prog.file_idx < prog.files.size()) {
-                size_t dir = 1;
-                const File& this_file = prog.files[prog.file_idx];
-
-                if (IsKeyPressed(ImGuiKey_N) && !ImGui::GetIO().WantCaptureKeyboard) {
-                    // N = search forward
-                    // Shift N = search backward
-                    dir = (ImGui::GetIO().KeyShift) ? -1 : 1;
-
-                    // advance search by skipping the previous match
-                    gui.source_found_line_idx += dir;
-                    size_t linesize = this_file.lines.size();
-                    if (gui.source_found_line_idx > linesize) // wrap around
-                        gui.source_found_line_idx = linesize - 1;
-                }
-
-                // search for a keyword starting at the last found index + 1
-                bool wraparound = false;
-                gui.source_found_line = false;
-                for (size_t i = gui.source_found_line_idx; i < this_file.lines.size(); i += dir) {
-                    const String& line = GetLine(this_file, i);
-                    if (NULL != strstr(line.c_str(), gui.source_search_keyword)) {
-                        gui.source_found_line = true;
-                        gui.jump_type = Jump_Search;
-                        gui.source_found_line_idx = i;
-                        break;
-                    }
-
-                    if (!wraparound && i + dir >= this_file.lines.size()) {
-                        // continue searching at the other end of the array
-                        i = (dir == 1) ? 0 : this_file.lines.size() - 1;
-                        wraparound = true;
-                    }
-                }
-                if (!gui.source_found_line)
-                    gui.source_found_line_idx = 0;
-            }
-
-            ImGui::Separator();
-            ImGui::BeginChild("SourceScroll");
-        }
 
         if (prog.file_idx < prog.files.size() && prog.files[prog.file_idx].lines.size() > 0) {
             const File& file = prog.files[prog.file_idx];
@@ -1690,44 +1468,6 @@ void Draw()
                 // automatically scroll to the next executed line if it is far enough away
                 // and we've just stopped execution
                 size_t start_idx = (ImGui::GetScrollY() / lineheight);
-                if (gui.jump_type != Jump_None) {
-                    size_t middle_idx = BAD_INDEX;
-                    switch (gui.jump_type) {
-                    case Jump_Stopped: {
-                        if (in_active_frame_file) {
-                            const Frame& frame = prog.frames[prog.frame_idx];
-                            bool is_next_exec_visible = frame.line_idx >= start_idx + 5
-                                && frame.line_idx <= start_idx + perscreen - 5;
-                            if (!is_next_exec_visible)
-                                middle_idx = frame.line_idx;
-                        }
-                    } break;
-
-                    case Jump_Goto: {
-                        middle_idx = gui.goto_line_idx;
-                    } break;
-
-                    case Jump_Search: {
-                        bool is_found_visible = gui.source_found_line_idx >= start_idx
-                            && gui.source_found_line_idx < start_idx + perscreen;
-
-                        if (!is_found_visible)
-                            middle_idx = gui.source_found_line_idx;
-                    } break;
-
-                        DefaultInvalid
-                    }
-
-                    if (middle_idx < file.lines.size()) {
-                        size_t s = middle_idx - (perscreen / 2);
-                        if (s >= file.lines.size())
-                            s = 0;
-                        start_idx = s;
-                        ImGui::SetScrollY(start_curpos_y + start_idx * lineheight);
-                    }
-
-                    gui.jump_type = Jump_None;
-                }
 
                 size_t end_idx = GetMin(start_idx + perscreen, file.lines.size());
                 if (file.lines.size() > perscreen) {
@@ -1930,11 +1670,9 @@ void Draw()
                                                 }
                                             }
                                         } else {
-                                            ImGui::PushFont(gui.default_font);
                                             ImGui::BeginTooltip();
                                             ImGui::Text("%s", hover_value.c_str());
                                             ImGui::EndTooltip();
-                                            ImGui::PopFont();
                                         }
 
                                         break;
@@ -1983,9 +1721,6 @@ void Draw()
                 const Frame& frame = prog.frames[prog.frame_idx];
                 // automatically scroll to the next executed line if it is far enough away
                 // and we've just stopped execution
-                if (gui.jump_type == Jump_Stopped)
-                    gui.jump_type = Jump_None;
-
                 size_t start_idx = (ImGui::GetScrollY() / lineheight);
                 size_t end_idx = GetMin(start_idx + perscreen, gui.line_disasm.size());
                 if (gui.line_disasm.size() > perscreen) {
@@ -2141,7 +1876,6 @@ void Draw()
             ImGui::EndChild();
 
         ImGui::End();
-        ImGui::PopFont();
         ImGui::GetStyle().FrameBorderSize = saved_frame_border_size; // restore saved size
     }
 
@@ -2153,7 +1887,6 @@ void Draw()
 
         // jump to next executed line
         if (ImGui::Button("---") && prog.frame_idx < prog.frames.size()) {
-            gui.jump_type = Jump_Goto;
             gui.goto_line_idx = prog.frames[prog.frame_idx].line_idx;
         }
 
@@ -2301,7 +2034,6 @@ void Draw()
             bool use_last_command
                 = (input_command.size() == 0 && prog.input_cmd_offsets.size() > 0);
             String send_command = (use_last_command) ? GetInputCommand(0) : input_command;
-            std::erase_if(send_command, [](char c) { return c == '\r' || c == '\n' || c == ' '; });
             String tagged_send_command = StringPrintf("(gdb) %s", send_command.c_str());
             WriteToConsoleBuffer(tagged_send_command.c_str(), tagged_send_command.size());
 
@@ -2315,7 +2047,6 @@ void Draw()
             static const auto PopFrontWord = [](String& str) -> String {
                 // remove the beginning word from full and return it
                 String result;
-                std::erase_if(str, [](char c) { return c == '\r' || c == '\n' || c == ' '; });
                 size_t space_idx = str.find(' ');
 
                 if (space_idx < str.size()) {
@@ -2732,7 +2463,8 @@ void Draw()
 
             // enable all, disable all, delete all
             ImGui::TableSetColumnIndex(0);
-            if (ImGui::Button("X##BreakpointDeleteAll") && gdb::send_blocking("-break-delete --all"))
+            if (ImGui::Button("X##BreakpointDeleteAll")
+                && gdb::send_blocking("-break-delete --all"))
                 prog.breakpoints.clear();
 
             ImGui::SameLine();
@@ -2802,7 +2534,6 @@ void Draw()
                 if (i == edit_bkpt_idx) {
                     if (ImGui::InputText("##EditBreakpointCond", editcond, sizeof(editcond),
                             ImGuiInputTextFlags_EnterReturnsTrue, NULL, NULL)) {
-                        g_gdb.echo_next_no_symbol_in_context = true;
                         tsnprintf(tmpbuf, "-break-condition %d %s", (int)iter.number, editcond);
                         if (gdb::send_blocking(tmpbuf, rec)) {
                             iter.cond = editcond;
@@ -2938,136 +2669,6 @@ void Draw()
 
         ImGui::End();
     }
-
-    if (gui.show_directory_viewer) {
-        // treenode directory viewer
-        ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
-        ImGui::Begin("Directory Viewer", &gui.show_directory_viewer);
-
-        struct FileEntry {
-            unsigned char dirent_d_type; // dirent.d_type
-            String filename;
-            std::vector<FileEntry> entries;
-            bool queried;
-            FileEntry(String fn, unsigned char d_type)
-            {
-                dirent_d_type = d_type;
-                filename = fn;
-                queried = false;
-            }
-        };
-
-        char abspath[PATH_MAX];
-        static FileEntry root = FileEntry(realpath(".", abspath), 0);
-        static FileEntry* query_output = &root;
-        static String query_dir = root.filename;
-
-        // TODO: is there a cleaner way to recurse lambdas
-        typedef std::function<void(FileEntry & root, String & path)> RecurseFilesFn;
-        static RecurseFilesFn RecurseFiles;
-        int id = 0;
-        const RecurseFilesFn _RecurseFiles
-            = [&id, &tmpbuf, &abspath](FileEntry& parent, String& path) {
-                  for (FileEntry& ent : parent.entries) {
-                      if (ent.dirent_d_type & DT_DIR) {
-                          if (ImGui::TreeNode(ent.filename.c_str())) {
-                              if (!ent.queried) {
-                                  query_output = &ent;
-                                  query_dir = path + "/" + ent.filename;
-                              } else if (ent.entries.size() > 0) {
-                                  String next = path + "/" + ent.filename;
-                                  RecurseFiles(ent, next);
-                              }
-
-                              ImGui::TreePop();
-                          }
-                      } else {
-                          tsnprintf(tmpbuf, "%s##%d", ent.filename.c_str(), id++);
-                          if (ImGui::Selectable(tmpbuf)) {
-                              String relpath = path + "/" + ent.filename;
-                              char* rc = realpath(relpath.c_str(), abspath);
-                              if (rc == NULL) {
-                                  PrintErrorf("realpath %s\n", GetErrorString(errno));
-                              } else {
-                                  size_t idx = FindOrCreateFile(abspath);
-                                  File& f = prog.files[idx];
-                                  if (f.lines.size() > 0 || LoadFile(f)) {
-                                      prog.file_idx = idx;
-                                      gui.jump_type = Jump_Goto;
-                                      gui.goto_line_idx = 0;
-                                  }
-                              }
-                          }
-                      }
-                  }
-              };
-
-        static FileWindowContext ctx;
-        static bool show_change_dir = false;
-        show_change_dir |= ImGui::Button("...##ChangeDirectory");
-
-        if (show_change_dir
-            && ImGuiFileWindow(ctx, ImGuiFileWindowMode_SelectDirectory, root.filename.c_str())) {
-            if (ctx.selected) {
-                query_output = &root;
-                root.filename = ctx.path.c_str();
-                query_dir = root.filename;
-            }
-
-            show_change_dir = false;
-        }
-
-        ImGui::SameLine();
-        ImGui::Text("%s", root.filename.c_str());
-
-        RecurseFiles = _RecurseFiles;
-        RecurseFiles(root, root.filename);
-
-        if (query_output != NULL) {
-            query_output->entries.clear();
-            query_output->queried = true;
-            struct dirent* entry = NULL;
-            DIR* dir = NULL;
-
-            dir = opendir(query_dir.c_str());
-            if (dir == NULL) {
-                PrintErrorf("opendir on %s %s\n", query_dir.c_str(), GetErrorString(errno));
-            } else {
-                // TODO: lstat then S_ISREG and S_ISDIR macros for when d_type isn't supported
-                while (NULL != (entry = readdir(dir))) {
-                    if (0 == strcmp(".", entry->d_name) || 0 == strcmp("..", entry->d_name))
-                        continue; // skip current and parent dir
-
-                    // insert directories before files, all sorted a-z
-                    bool entry_dir = (entry->d_type & DT_DIR);
-                    size_t insert_idx = query_output->entries.size();
-                    for (size_t i = 0; i < query_output->entries.size(); i++) {
-                        const FileEntry& iter = query_output->entries[i];
-                        bool iter_dir = (iter.dirent_d_type & DT_DIR);
-                        if (entry_dir == iter_dir) {
-                            if (-1 == strcmp(entry->d_name, iter.filename.c_str())) {
-                                insert_idx = i;
-                                break;
-                            }
-                        } else if (entry_dir && !iter_dir) {
-                            insert_idx = i;
-                            break;
-                        }
-                    }
-
-                    query_output->entries.insert(query_output->entries.begin() + insert_idx,
-                        FileEntry(entry->d_name, entry->d_type));
-                }
-
-                closedir(dir);
-                dir = NULL;
-            }
-
-            query_output = NULL;
-        }
-
-        ImGui::End();
-    }
 }
 
 static void glfw_error_callback(int error, const char* description)
@@ -3160,56 +2761,6 @@ int main(int argc, char** argv)
     } while (0)
 #define ExitMessage(msg) ExitMessagef("%s", msg)
 
-    atexit([]() {
-        // shutdown imgui
-        if (gui.started_imgui_opengl2)
-            ImGui_ImplOpenGL2_Shutdown();
-
-        if (gui.started_imgui_glfw)
-            ImGui_ImplGlfw_Shutdown();
-
-        if (gui.created_imgui_context)
-            ImGui::DestroyContext();
-
-        // shutdown glfw
-        if (gui.window)
-            glfwDestroyWindow(gui.window);
-
-        if (gui.initialized_glfw)
-            glfwTerminate();
-
-        // shutdown GDB
-        if (g_gdb.thread_read_interp) {
-            pthread_cancel(g_gdb.thread_read_interp);
-            pthread_join(g_gdb.thread_read_interp, NULL);
-        }
-
-        if (g_gdb.recv_block)
-            sem_close(g_gdb.recv_block);
-
-        if (g_gdb.fd_ptty_master)
-            close(g_gdb.fd_ptty_master);
-
-        if (g_gdb.fd_in_read)
-            close(g_gdb.fd_in_read);
-
-        if (g_gdb.fd_out_read)
-            close(g_gdb.fd_out_read);
-
-        if (g_gdb.fd_in_write)
-            close(g_gdb.fd_in_write);
-
-        if (g_gdb.fd_out_write)
-            close(g_gdb.fd_out_write);
-
-        if (g_gdb.spawned_pid)
-            os::kill_process(g_gdb.spawned_pid);
-
-        pthread_mutex_t zmutex = {};
-        if (memcmp(&zmutex, &g_gdb.modify_block, sizeof(pthread_mutex_t)) != 0)
-            pthread_mutex_destroy(&g_gdb.modify_block);
-    });
-
     {
         // GDB Init
         int rc = 0;
@@ -3249,7 +2800,8 @@ int main(int argc, char** argv)
         }
 
         extern void* GDB_ReadInterpreterBlocks(void*);
-        rc = pthread_create(&g_gdb.thread_read_interp, NULL, gdb::read_interpreter_blocks, (void*)NULL);
+        rc = pthread_create(
+            &g_gdb.thread_read_interp, NULL, gdb::read_interpreter_blocks, (void*)NULL);
         if (rc < 0)
             ExitMessagef("pthread_create %s\n", GetErrorString(errno));
 
@@ -3307,42 +2859,29 @@ int main(int argc, char** argv)
 
     // initialize GLFW
     glfwSetErrorCallback(glfw_error_callback);
-    gui.initialized_glfw = glfwInit();
-    if (!gui.initialized_glfw)
-        ExitMessage("glfwInit\n");
+    int err = glfwInit();
+    if (err < 0)
+        exit(EXIT_FAILURE);
 
     gui.window = glfwCreateWindow(1080, 720, "ImGDB", NULL, NULL);
     if (gui.window == NULL)
-        ExitMessage("glfwCreateWindow\n");
+        exit(EXIT_FAILURE);
 
     glfwMakeContextCurrent(gui.window);
     glfwSwapInterval(1); // Enable vsync
+    
+    if (ImGui::CreateContext() == NULL)
+        exit(EXIT_FAILURE);
 
-    const auto OnDragDrop = [](GLFWwindow* /*window*/, int count, const char** paths) {
-        if (count == 1) {
-            const char* file = paths[0];
-            if (os::fs::is_executable(file)) {
-                gui.drag_drop_exe_path = file;
-            }
-        }
-    };
-    glfwSetDropCallback(gui.window, OnDragDrop);
+    bool ok = true;
 
-    // Startup Dear ImGui
-    if (!IMGUI_CHECKVERSION())
-        ExitMessage("IMGUI_CHECKVERSION\n");
+    ok = ImGui_ImplGlfw_InitForOpenGL(gui.window, true);
+    if (!ok)
+        exit(EXIT_FAILURE);
 
-    gui.created_imgui_context = ImGui::CreateContext();
-    if (!gui.created_imgui_context)
-        ExitMessage("ImGui::CreateContext\n");
-
-    gui.started_imgui_glfw = ImGui_ImplGlfw_InitForOpenGL(gui.window, true);
-    if (!gui.started_imgui_glfw)
-        ExitMessage("ImGui_ImplGlfw_InitForOpenGL\n");
-
-    gui.started_imgui_opengl2 = ImGui_ImplOpenGL2_Init();
-    if (!gui.started_imgui_opengl2)
-        ExitMessage("ImGui_ImplOpenGL2_Init\n");
+    ok = ImGui_ImplOpenGL2_Init();
+    if (!ok)
+        exit(EXIT_FAILURE);
 
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
@@ -3350,36 +2889,9 @@ int main(int argc, char** argv)
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // Enable Docking
 
     // Setup Dear ImGui style
-    SetWindowTheme(gui.window_theme);
     ImGuiStyle& style = ImGui::GetStyle();
     style.ScrollbarRounding = 2.0f;
     style.TabRounding = 2.0f;
-
-    // change font data before it gets locked with NewFrame
-    // TODO: reloading both fonts when source font changes, might change to font scaling
-    // instead
-    io.Fonts->Clear();
-    ImGui_ImplOpenGL2_DestroyFontsTexture();
-
-    const auto LoadFont = [&io](float font_size) -> ImFont* {
-        ImFontConfig cfg = {};
-        cfg.FontDataOwnedByAtlas = false; // static memory
-        ImFont* result = io.Fonts->AddFontFromMemoryTTF(
-            liberation_mono_ttf, sizeof(liberation_mono_ttf), font_size, &cfg);
-
-        if (result == NULL)
-            PrintError("error loading default font?!?!?");
-
-        return result;
-    };
-
-    gui.default_font = LoadFont(gui.font_size);
-    gui.source_font = LoadFont(gui.source_font_size);
-
-    if (gui.default_font == NULL || gui.source_font == NULL)
-        return EXIT_FAILURE;
-
-    ImGui_ImplOpenGL2_CreateFontsTexture();
 
     // Main loop
     while (!glfwWindowShouldClose(gui.window)) {
@@ -3430,6 +2942,8 @@ int main(int argc, char** argv)
         glfwMakeContextCurrent(gui.window);
         glfwSwapBuffers(gui.window);
     }
+
+    printf("Size %lu\n", s_allocations);
 
     // Shutdown lambda called here from atexit
     return EXIT_SUCCESS;

@@ -1,6 +1,5 @@
 // GDB Layer
 
-#include "gdb.h"
 namespace gdb {
 
 static ssize_t read_block_maxsize = 0;
@@ -844,7 +843,7 @@ bool send(const char* cmd)
 static size_t send_blocking_internal(const char* cmd, bool remove_after)
 {
     uint32_t this_record_id = g_gdb.record_id++;
-    char fullrecord[8 * 1024];
+    char fullrecord[KB(8)];
     tsnprintf(fullrecord, "%u%s", this_record_id, cmd);
     size_t result = BAD_INDEX;
 
@@ -892,9 +891,6 @@ static size_t send_blocking_internal(const char* cmd, bool remove_after)
 
         } while (!found);
     }
-
-    // reset to default ignoring "no symbol in context" GDB MI error
-    g_gdb.echo_next_no_symbol_in_context = false;
 
     return result;
 }
@@ -1066,26 +1062,7 @@ void grab_block_data()
                 RecordHolder& last = prog.read_recs[prog.num_recs - 1];
                 last.rec = OPTIMIZED_OUT_FIX;
                 last.parsed = false;
-            } else {
-                // don't print error on watch variables not in scope (no symbol "xyz" in current
-                // context) don't print error on hovering mouse over a type name
-                if (NULL == strstr(bufstr, "in current context.")
-                    || g_gdb.echo_next_no_symbol_in_context)
-                // NULL == strstr(bufstr, "Attempt to use a type name as an expression"))
-                {
-                    // convert error record to GDB console output record
-                    String errmsg = extract_value("msg", iter.rec);
-
-                    // replace bad description of when an executable doesn't reference a sourcefile
-                    static const char* needle = "No source file named";
-                    size_t idx = errmsg.find(needle);
-                    if (idx < errmsg.size())
-                        errmsg.replace(idx, strlen(needle), "executable doesn't reference file");
-
-                    errmsg = "&\"GDB MI Error: " + errmsg + "\\n\"\n";
-                    WriteToConsoleBuffer(errmsg.data(), errmsg.size());
-                }
-            }
+            } 
         }
     }
 

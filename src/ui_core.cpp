@@ -1,0 +1,3 @@
+namespace ui_core {
+
+}
