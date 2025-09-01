@@ -1398,8 +1398,6 @@ void Draw()
                     tsnprintf(debug_filename, "%s", g_gdb.debug_filename.c_str());
                 }
                 tsnprintf(debug_args, "%s", g_gdb.debug_args.c_str());
-                tsnprintf(gdb_filename, "%s", g_gdb.filename.c_str());
-                tsnprintf(gdb_args, "%s", g_gdb.args.c_str());
             }
 
             ImGui::InputText("GDB filename", gdb_filename, sizeof(gdb_filename));
@@ -1443,18 +1441,6 @@ void Draw()
             bool started = false;
             ImGuiDisabled(prog.started, started = ImGui::Button("Start##Debug Program Menu"));
             if (started) {
-                if (g_gdb.filename != gdb_filename) {
-                    if (g_gdb.spawned_pid != 0) {
-                        Printf("ending %s...", g_gdb.filename.c_str());
-                        g_gdb.filename = "";
-                        os::kill_process(g_gdb.spawned_pid);
-                        ResetProgramState();
-                        g_gdb.spawned_pid = 0;
-                    }
-
-                    gdb::start_process(gdb_filename, gdb_args);
-                }
-
                 if (g_gdb.spawned_pid != 0 && gdb::set_inferior_exe(debug_filename)
                     && gdb::set_inferior_args(debug_args)) {
                     if (g_gdb.capabilities & GDB_RUNSTART)
@@ -3308,9 +3294,7 @@ int main(int argc, char** argv)
 
     g_gdb.debug_filename = argv[1];
 
-    if (!g_gdb.filename.empty() && !gdb::start_process(g_gdb.filename, "")) {
-        g_gdb.filename = "";
-    }
+    gdb::start_process("gdb", "");
 
     if (g_gdb.spawned_pid != 0 && !g_gdb.debug_filename.empty()) {
         if (gdb::set_inferior_exe(g_gdb.debug_filename)) {

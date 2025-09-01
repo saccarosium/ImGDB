@@ -36,12 +36,9 @@ struct GDB {
     pid_t spawned_pid; // process running GDB
     String debug_filename; // debug executable filename
     String debug_args; // args passed to debug executable
-    String filename = "gdb"; // filename of spawned GDB
-    String args; // args passed to spawned GDB
     String ptty_slave;
     int fd_ptty_master;
 
-    bool end_program;
     pthread_t thread_read_interp;
     // pthread_t thread_write_stdin;
 
@@ -62,7 +59,7 @@ struct GDB {
 
     // raw data, guarded by modify_storage_lock
     // a block is one or more Records
-    char block_data[1024 * 1024];
+    char block_data[MB(1)];
     std::vector<Span> block_spans; // pipe read span into block_data
 
     u32 capabilities = 0;

@@ -193,8 +193,6 @@ bool start_process(String gdb_filename, String gdb_args)
         }
     }
 
-    g_gdb.filename = gdb_filename;
-    g_gdb.args = gdb_args;
     return true;
 }
 
