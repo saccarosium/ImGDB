@@ -23,7 +23,7 @@
 // third party
 #include <GLFW/glfw3.h>
 #include <imgui/all.hpp>
-#include <liberation_mono.h>
+#include <hack.h>
 
 // Mine
 #include "zero.hpp"
@@ -2902,8 +2902,7 @@ int main(int argc, char** argv)
 
     ImFontConfig cfg = {};
     cfg.FontDataOwnedByAtlas = false; // static memory
-    g_font = io.Fonts->AddFontFromMemoryTTF(
-        liberation_mono_ttf, sizeof(liberation_mono_ttf), 16.0f, &cfg);
+    g_font = io.Fonts->AddFontFromMemoryTTF(Hack_Font, Hack_Font_len, 16.0f, &cfg);
 
     if (g_font == NULL)
         return EXIT_FAILURE;
