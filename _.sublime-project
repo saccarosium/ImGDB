@@ -1,0 +1,23 @@
+{
+   "folders":
+   [
+       {
+           "path": "."
+       }
+   ],
+   "build_systems":
+    [
+        {
+            "name": "Build",
+            "shell_cmd": "make DEBUG=1",
+            "working_dir": "${folder:${project_path:${file_path}}}",
+            "file_regex": "^(..[^:\n]*):([0-9]+):?([0-9]+)?:? (.*)$",
+        },
+        {
+            "name": "Run",
+            "shell_cmd": "make DEBUG=1 && ./build/debug/imgdb",
+            "working_dir": "${folder:${project_path:${file_path}}}",
+            "file_regex": "^(..[^:\n]*):([0-9]+):?([0-9]+)?:? (.*)$",
+        }
+    ]
+}

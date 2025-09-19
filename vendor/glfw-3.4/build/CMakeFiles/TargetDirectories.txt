@@ -1,0 +1,15 @@
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/CMakeFiles/uninstall.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/CMakeFiles/edit_cache.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/CMakeFiles/rebuild_cache.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/CMakeFiles/list_install_components.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/CMakeFiles/install.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/CMakeFiles/install/local.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/CMakeFiles/install/strip.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/src/CMakeFiles/glfw.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/src/CMakeFiles/update_mappings.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/src/CMakeFiles/edit_cache.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/src/CMakeFiles/rebuild_cache.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/src/CMakeFiles/list_install_components.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/src/CMakeFiles/install.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/src/CMakeFiles/install/local.dir
+/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/src/CMakeFiles/install/strip.dir

@@ -1,0 +1,8 @@
+/home/sacca/Repos/saccarosium/ImGDBv2/build/release/lib/libglfw3.a
+/home/sacca/Repos/saccarosium/ImGDBv2/build/release/include/GLFW/glfw3native.h
+/home/sacca/Repos/saccarosium/ImGDBv2/build/release/include/GLFW/glfw3.h
+/home/sacca/Repos/saccarosium/ImGDBv2/build/release/lib/cmake/glfw3/glfw3Config.cmake
+/home/sacca/Repos/saccarosium/ImGDBv2/build/release/lib/cmake/glfw3/glfw3ConfigVersion.cmake
+/home/sacca/Repos/saccarosium/ImGDBv2/build/release/lib/cmake/glfw3/glfw3Targets.cmake
+/home/sacca/Repos/saccarosium/ImGDBv2/build/release/lib/cmake/glfw3/glfw3Targets-release.cmake
+/home/sacca/Repos/saccarosium/ImGDBv2/build/release/lib/pkgconfig/glfw3.pc

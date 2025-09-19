@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/cmake_install.cmake",
+		"/home/sacca/Repos/saccarosium/ImGDBv2/vendor/glfw-3.4/build/src/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
